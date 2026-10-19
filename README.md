@@ -10,7 +10,25 @@ Everything runs locally. There are no API keys and nothing is uploaded.
 
 ## Benchmark
 
-Results are being finalised (A/B of Claude Sonnet 5.5 with and without the kit on an app recording, a music video, an 8-minute talk segment and a 74-minute keynote; harness in `bench/`).
+The same agent (Claude Code headless, Claude Sonnet 5.5) answered the same questions about the same videos **with and without** 9xvision. Both arms had the whole machine: ffmpeg, ffprobe, whisper.cpp, tesseract and python. The kit arm also had `9xvision` and the skill text, and started from an empty cache each run, so its processing time counts. Answers were graded blind by Claude Opus 5.5 against answer keys written and verified from raw frames before the runs. 3–4 runs per cell, October 2026.
+
+| Video | Task | Accuracy without → with | Cost / run | Agent turns | Wall time |
+|---|---|---|---|---|---|
+| iPhone app onboarding, 97 s | 12 questions | 99% → 99% | $0.27 → $0.25 | 20 → 15 | 84 s → 109 s |
+| same recording | full screen-by-screen teardown, 14-point rubric | 98% → 96% | $0.49 → $0.29 | 27 → 13 | 157 s → 128 s |
+| music video, 2:37, 110 shots | 12 questions | 92% → 98% | $0.33 → $0.25 | 28 → 15 | 98 s → 99 s |
+| keynote segment, 8 min, captions | 12 questions | 94% → 100% | $0.27 → $0.18 | 21 → 13 | 56 s → 68 s |
+| full keynote, 74 min, captions | 8 needle questions (on-screen only) | 98% → 98% | $0.43 → $0.42 | 39 → 28 | 156 s → 287 s |
+| **all** | | **96% → 98%** | **−22%** | **−38%** | |
+
+What this means, without spin:
+
+- A frontier agent with ffmpeg is already a strong video reader. The kit's gains come from **fewer misses on fast, visual-only detail** (0.5 s inserts in a music video, a file path on a slide), **fewer tokens and turns**, and **a reusable cache**: every later question about the same video is instant.
+- It produces things the baseline never builds: the UI flow with what changed at each step (`local change at 'Work' · 'Self-Care'`), every screen's copy, palettes, a colour script, and stitched pages.
+- **Cold start is the cost.** A 74-minute video takes about 100 s to process the first time, so on a single question about a long, captioned video, caption search plus a few ffmpeg grabs is faster.
+- **Selection state still needs a look.** OCR text can't tell checked from unchecked; the flow says *where* a change happened, and `diff` or `frame` shows *what*.
+
+The answer keys were corrected three times after inspecting failures; each time the key was wrong, not the run, and both arms were re-graded. Harness and grader: `bench/`.
 
 ## Install
 
