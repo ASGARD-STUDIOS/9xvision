@@ -27,17 +27,19 @@ def checks() -> list[dict]:
     brew = shutil.which("brew")
     pkg = "brew install" if mac and brew else "sudo apt install" if shutil.which("apt") else "install"
     ocr = extract.ocr_backend()
-    whisper = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
-    model = extract._whisper_cpp_model(0)
+    whisper_cpp = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
+    whisper = whisper_cpp or shutil.which("whisper")   # openai-whisper fetches its own models
+    model = extract._whisper_cpp_model(0) if whisper_cpp else True
     return [
         {"name": "ffmpeg + ffprobe", "required": True, "ok": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
          "fix": f"{pkg} ffmpeg", "auto": ["brew", "install", "ffmpeg"] if brew else None},
         {"name": f"OCR ({ocr or 'none'})", "required": False, "ok": ocr is not None,
          "why": "reads text on screen", "fix": f"{pkg} tesseract",
          "auto": ["brew", "install", "tesseract"] if brew else None},
-        {"name": "whisper.cpp", "required": False, "ok": bool(whisper),
+        {"name": "speech-to-text (whisper)", "required": False, "ok": bool(whisper),
          "why": "transcribes speech when a video has no captions",
-         "fix": f"{pkg} whisper-cpp", "auto": ["brew", "install", "whisper-cpp"] if brew else None},
+         "fix": "brew install whisper-cpp" if brew else "pipx install openai-whisper  (or build github.com/ggml-org/whisper.cpp)",
+         "auto": ["brew", "install", "whisper-cpp"] if brew else None},
         {"name": "whisper model", "required": False, "ok": model is not None,
          "why": f"{WHISPER_MODEL}, 466 MB, into {MODELS}", "fix": "9xvision setup", "auto": "model"},
     ]
