@@ -74,16 +74,26 @@ def _decode_other(path: Path) -> Image.Image:
     return im
 
 
+Image.MAX_IMAGE_PIXELS = 400_000_000          # big scans and panoramas are the point; 400 MP is ~1.2 GB as RGB
+
+
 def open_image(path: str | Path) -> tuple[np.ndarray, Image.Image]:
     """RGB array (EXIF orientation applied) and the PIL image (for EXIF)."""
     path = Path(path)
     try:
         im = Image.open(path)
         im.load()
+    except Image.DecompressionBombError as e:
+        raise ValueError(f"{path.name}: {e} (over {Image.MAX_IMAGE_PIXELS // 1_000_000} MP); crop or downscale it first") from None
     except Exception:
         im = _decode_other(path)
     raw = im
     im = ImageOps.exif_transpose(im)
+    if im.mode in ("I", "I;16", "I;16B", "I;16L", "I;16N", "F"):     # 16-bit / float greyscale (scans, depth maps)
+        a = np.asarray(im, dtype=np.float64)
+        lo, hi = float(a.min()), float(a.max())
+        a = a / 257 if im.mode.startswith("I;16") or (hi > 255 and hi <= 65535 and lo >= 0) else (a - lo) / max(hi - lo, 1e-9) * 255
+        im = Image.fromarray(np.clip(a, 0, 255).astype(np.uint8), "L")
     if im.mode not in ("RGB",):
         bg = Image.new("RGB", im.size, (255, 255, 255))
         if im.mode in ("RGBA", "LA", "P"):
@@ -174,6 +184,8 @@ def _box(region: str, w: int, h: int, cols: int, rows: int) -> tuple[int, int, i
         raise ValueError(f"region {region!r}: use x,y,w,h in pixels or 0-1 fractions") from None
     if len(v) != 4:
         raise ValueError(f"region {region!r}: needs four numbers x,y,w,h")
+    if v[2] <= 0 or v[3] <= 0 or v[0] < 0 or v[1] < 0:
+        raise ValueError(f"region {region!r}: width and height must be positive and x,y not negative")
     if all(0 <= x <= 1 for x in v):
         v = [v[0] * w, v[1] * h, v[2] * w, v[3] * h]
     x, y = int(max(0, min(v[0], w - 1))), int(max(0, min(v[1], h - 1)))
@@ -196,12 +208,16 @@ def inspect(source: str, region: str | None = None, ocr: bool = True) -> dict:
         if max(bw, bh) < 768:      # enlarge small regions so fine text is legible
             scale = min(4.0, 768 / max(bw, bh))
             crop = cv2.resize(crop, (round(bw * scale), round(bh * scale)), interpolation=cv2.INTER_LANCZOS4)
+        elif max(bw, bh) > render.MAX_EDGE:     # never hand an agent more than it can see
+            scale = render.MAX_EDGE / max(bw, bh)
+            crop = cv2.resize(crop, (round(bw * scale), round(bh * scale)), interpolation=cv2.INTER_AREA)
         p = d / f"region-{x}-{y}-{bw}-{bh}.png"
         Image.fromarray(crop).save(p)
         out = {"path": str(p), "box": [x, y, bw, bh], "source_px": [w, h], "scale": round(scale, 2),
                "size": list(crop.shape[1::-1]), "tokens": render.token_estimate(*crop.shape[1::-1])}
-        if crop.shape[0] * crop.shape[1] > render.MAX_EDGE ** 2:
-            out["note"] = "this region is bigger than an agent sees at full resolution; ask for a smaller one to read fine detail"
+        if scale < 1:
+            out["note"] = (f"this region is {bw}x{bh} px, shown at {scale:.2f}x; ask for a region under "
+                           f"{render.MAX_EDGE} px to see it at native resolution")
         if ocr:
             lines = extract.ocr(rgb[y:y + bh, x:x + bw])
             if lines:
@@ -299,7 +315,7 @@ def album(sources: list[str], recursive: bool = False, ocr: bool = True, force: 
         th = _resize(rgb, 384)
         rel = f"thumbs/{i:04d}.jpg"
         Image.fromarray(th).save(d / rel, quality=85)
-        it = {"id": i, "file": str(f), "name": f.name, "px": [w, h], "bytes": f.stat().st_size, "thumb": rel,
+        it = {"id": i, "file": str(f.resolve()), "name": f.name, "px": [w, h], "bytes": f.stat().st_size, "thumb": rel,
               **exif(raw), "palette": [c["hex"] for c in extract.palette(_resize(rgb, 256), k=4)], "dhash": f"{dhash(rgb):016x}"}
         if ocr:
             it["text"] = [ln["text"] for ln in extract.ocr(_resize(rgb, 2600))]
@@ -369,18 +385,19 @@ def album_index(m: dict) -> str:
 
 
 def album_search(d: Path, m: dict, query: str, k: int = 12) -> dict:
-    from .semantic import LOGIT_BIAS, LOGIT_SCALE, STRONG, WEAK, _Model, query_note
+    from .semantic import LOGIT_BIAS, LOGIT_SCALE, _Model, band, query_note
     z = np.load(d / "embeddings.npz")
     ids, e = z["t"].astype(int), z["e"].astype(np.float32)
     q = _Model.get().texts([query])[0]
     score = 1 / (1 + np.exp(-(LOGIT_SCALE * (e @ q) + LOGIT_BIAS)))
     by_id = {it["id"]: it for it in m["images"]}
+    med = float(np.median(score))
     res = []
     for i in np.argsort(-score)[:k]:
         it = by_id[int(ids[i])]
         s = float(score[i])
         res.append({"id": it["id"], "file": it["file"], "score": round(s, 4),
-                    "match": "strong" if s >= STRONG else "possible" if s >= WEAK else "weak"})
+                    "match": band(s, med)})
     sheet = None
     if res:
         p = d / "search" / f"visual_{hashlib.sha1(query.encode()).hexdigest()[:10]}.jpg"

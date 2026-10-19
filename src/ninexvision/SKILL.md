@@ -71,12 +71,12 @@ Run `qa`, then `watch` the same capture. For each hitch and flash window, `zoom`
 
 Only start the camera or microphone when the user asked for it. Then:
 
-1. `9xvision live start camera` (or MCP `live_start`; `screen`, `screen:1`, `camera:1`, a stream URL, or a file played in real time). Add `--hands`/`--pose` for gestures and body, `--watch-for "someone waving"` for visual triggers, `--osc host:port` to drive TouchDesigner/Max/Ableton. It prints a monitor URL the user can open.
+1. `9xvision live start camera` (or MCP `live_start`; `screen`, `screen:1`, `camera:1`, a stream URL, or a file played in real time). Add `--hands`/`--pose` for gestures and body, `--watch-for "a dog"` for visual triggers, `--osc host:port` to drive TouchDesigner/Max/Ableton. It prints a monitor URL the user can open.
 2. `9xvision live now` (MCP `live_now`) returns a summary, the latest frame and recent events. Look at the frame before describing the scene.
 3. `9xvision live snapshot 30` (MCP `live_snapshot`) turns the last 30 s into a normal watch, with a "Live signals" section. Use zoom/frame/search on it for anything detailed.
 4. `9xvision live stop` (MCP `live_stop`) when done.
 
-Reading the signals: `energy` is absolute; `arousal` is relative to this session (0.5 = typical; the first 10 s are warm-up); `expression_valence` is the face's expression against that person's resting face, not their feelings. Say "smiling", "looked away", "nodded", not "happy", "bored", "agreed". There is no face recognition: never claim who someone is from these tools.
+Reading the signals: `energy` is absolute; `arousal` is relative to this session (0.5 = typical; the first 10 s are warm-up); `expression_valence` is the face's expression against that person's resting face, not their feelings. Say "smiling", "looked away", "nodded", not "happy", "bored", "agreed". There is no face recognition: never claim who someone is from these tools. Visual triggers judge single frames: use them for visible things ("a dog", "a laptop"), and the nod/shake/gesture events for actions.
 
 ## Images
 

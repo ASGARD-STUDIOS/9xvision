@@ -30,6 +30,11 @@ def _live(a) -> int:
                                    loop=False, beat_lead=0.0, open=False, quiet=False)
         if live.session():
             raise RuntimeError("a live session is already running (9xvision live stop)")
+        if a.port and not 1 <= a.port <= 65535:
+            raise ValueError(f"--port {a.port}: use 1-65535 (or 0 for no WebSocket)")
+        if a.osc:
+            from .bus import parse_target
+            parse_target(a.osc)
         log = (lambda m: None) if a.quiet else (lambda m: print(f"[9xvision] {m}", file=sys.stderr))
         if a.host not in ("127.0.0.1", "localhost", "::1"):
             log(f"listening on {a.host}: other machines on this network can read the live signals")
@@ -82,7 +87,7 @@ def _live(a) -> int:
         _print(live.request(req))
         return 0
     if cmd == "stop":
-        _print(live.request({"cmd": "stop"}))
+        _print(live.stop())
         return 0
     return 2
 
@@ -190,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     ls.add_argument("--hands", action="store_true", help="track hands: gesture, position, pinch")
     ls.add_argument("--pose", action="store_true", help="track the body: key points, movement energy, hands up")
     ls.add_argument("--mirrored", action="store_true", help="the picture is a mirrored selfie view (for left/right hands)")
-    ls.add_argument("--watch-for", nargs="+", default=[], metavar="QUERY", help='visual triggers, e.g. "someone waving"')
+    ls.add_argument("--watch-for", nargs="+", default=[], metavar="QUERY", help='visual triggers, e.g. "a dog"')
     ls.add_argument("--watch-threshold", type=float, default=0.1)
     ls.add_argument("--buffer", type=float, default=120, help="seconds kept in memory for snapshots (default 120)")
     ls.add_argument("--osc", metavar="HOST:PORT", help="send OSC here (TouchDesigner, Max, Ableton, Resolume...)")

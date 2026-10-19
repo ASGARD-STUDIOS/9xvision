@@ -1,6 +1,6 @@
 {
   "name": "9xvision",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Perception for agents: video (scenes, UI flows, OCR, transcripts, sound, visual search, capture QA), live camera/mic/screen (faces, gestures, affect, beats, OSC/WebSocket) and images (native-resolution regions, albums). Local, no API keys.",
   "author": {
     "name": "Koto Murai"

@@ -120,7 +120,8 @@ def main() -> None:
                 size = math.dist((lm[0].x, lm[0].y), (lm[9].x, lm[9].y)) + 1e-6
                 hs.append({"hand": side, "gesture": g.category_name if g else None, "score": round(g.score, 2) if g else 0.0,
                            "x": round(sum(lm[k].x for k in PALM) / 5, 3), "y": round(sum(lm[k].y for k in PALM) / 5, 3),
-                           "pinch": round(min(1.0, math.dist((lm[4].x, lm[4].y), (lm[8].x, lm[8].y)) / size), 3)})
+                           # 1 = thumb and index tips touching, 0 = a hand-length apart
+                           "pinch": round(max(0.0, 1.0 - math.dist((lm[4].x, lm[4].y), (lm[8].x, lm[8].y)) / size), 3)})
             res["hands"] = hs
         if pose:
             r = pose.detect_for_video(img, ts)

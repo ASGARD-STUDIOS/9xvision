@@ -81,13 +81,16 @@ class Affect:
         self.eyes_closed = False
         self.pose_hist: deque = deque()          # (t, yaw, pitch)
         self.last_head_event = -10.0
-        self.head_busy = False
+        self.head_settled = True
+        self.seg_start = -10.0                   # head reversals count from here (last event or last stillness)
+        self.facing_cand, self.facing_since = None, 0.0
         self.looking = deque()                   # (t, facing)
         self.facing = None
         self.face_present = False
         self.face_gone_at = None
         self.gestures: dict[str, str] = {}       # hand -> gesture held
         self.gesture_run: dict[str, tuple[str, float]] = {}
+        self.gesture_votes: dict[str, deque] = {}
         self.hands_up = False
         self.prev_pose = None
         self.t = 0.0
@@ -198,36 +201,56 @@ class Affect:
         self.looking.append((t, facing))
         while self.looking and self.looking[0][0] < t - 5:
             self.looking.popleft()
-        if self.facing is not None and facing != self.facing:
+        # looking away has to hold 0.4 s, so the swings of a head shake are not glances
+        if facing != self.facing_cand:
+            self.facing_cand, self.facing_since = facing, t
+        if self.facing is None:
+            self.facing = facing
+        elif facing != self.facing and t - self.facing_since >= 0.4:
+            self.facing = facing
             self._ev("look_back" if facing else "look_away", t)
-        self.facing = facing
         self.pose_hist.append((t, yaw, pitch))
         while self.pose_hist and self.pose_hist[0][0] < t - 1.2:
             self.pose_hist.popleft()
-        if t - self.last_head_event < 0.5 or len(self.pose_hist) < 6:
+        recent = [p for p in self.pose_hist if p[0] >= t - 0.4]
+        if len(recent) >= 4 and np.ptp([p[1] for p in recent]) < 4 and np.ptp([p[2] for p in recent]) < 3:
+            self.seg_start, self.head_settled = t, True   # the head is still: the next movement starts fresh
+        # one event per gesture; a movement that keeps going (nodding along) gives another every 1.5 s
+        gap = t - self.last_head_event
+        if gap < 0.5 or (not self.head_settled and gap < 1.5):
             return
-        ys = np.array([p[1] for p in self.pose_hist])
-        ps = np.array([p[2] for p in self.pose_hist])
-
+        win = [p for p in self.pose_hist if p[0] >= self.seg_start]
+        if len(win) < 6:
+            return
+        ys = np.array([p[1] for p in win])
+        ps = np.array([p[2] for p in win])
         yr, pr = float(np.ptp(ys)), float(np.ptp(ps))
-        if self.head_busy:            # one gesture per movement: the head has to settle before the next one counts
-            if yr < 4 and pr < 3:
-                self.head_busy = False
-            return
         back = lambda x, r: abs(x[-1] - x[0]) < 0.4 * r          # ended near where it started
-        if _swings(ys, 4) >= 2 and yr >= 8 and pr < yr / 2:
-            self._ev("shake", t, size_deg=round(yr, 1))
-            self.last_head_event, self.head_busy = t, True
-        elif (_swings(ps, 3) >= 2 or (_swings(ps, 3) >= 1 and pr >= 8 and back(ps, pr))) and pr >= 6 and yr < pr / 2:
-            self._ev("nod", t, size_deg=round(pr, 1))
-            self.last_head_event, self.head_busy = t, True
+        kind = None
+        if _swings(ys, 4) >= 2 and yr >= 8 and pr < 0.6 * yr:
+            kind, size = "shake", yr
+        elif (_swings(ps, 3) >= 2 or (_swings(ps, 3) >= 1 and pr >= 8 and back(ps, pr))) and pr >= 6 and yr < 0.6 * pr:
+            kind, size = "nod", pr
+        if kind:
+            self._ev(kind, t, size_deg=round(size, 1))
+            self.last_head_event, self.seg_start, self.head_settled = t, t, False
 
     def _hands(self, t: float, dt: float, hands: list[dict]) -> None:
+        # the recogniser flickers between a gesture and "None" frame to frame: vote over the last 0.5 s
+        frame = {h["hand"]: h.get("gesture") if h.get("gesture") not in (None, "None") and h.get("score", 0) >= 0.5 else None
+                 for h in hands}
+        for side in set(frame) | set(self.gesture_votes):
+            q = self.gesture_votes.setdefault(side, deque())
+            q.append((t, frame.get(side)))
+            while q and q[0][0] < t - 0.5:
+                q.popleft()
         seen = {}
-        for h in hands:
-            g = h.get("gesture")
-            if g and g != "None" and h.get("score", 0) >= 0.6:
-                seen[h["hand"]] = g
+        for side, q in self.gesture_votes.items():
+            votes = [g for _, g in q if g]
+            if votes:
+                top = max(set(votes), key=votes.count)
+                if votes.count(top) >= 0.35 * len(q):
+                    seen[side] = top
         for side in set(self.gestures) | set(seen) | set(self.gesture_run):
             g = seen.get(side)
             if g == self.gestures.get(side):

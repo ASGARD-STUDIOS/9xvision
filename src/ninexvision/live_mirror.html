@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9xvision mirror</title>
+<style>
+:root{--bg:#101112;--ink:#ececea;--mute:#8d9095;color-scheme:dark}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:13px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif;overflow:hidden}
+canvas{display:block;width:100vw;height:100vh}
+#info{position:fixed;left:16px;bottom:14px;color:var(--mute)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">9xvision mirror: a face driven by the live blendshapes; colour follows energy and arousal, the ring pulses on the beat.</div>
+<script>
+// A template for affective visuals: subscribe to the live stream, smooth the numbers, draw.
+const cv = document.getElementById("c"), g = cv.getContext("2d");
+let W = 0, H = 0, dpr = Math.max(1, devicePixelRatio || 1);
+function size(){ W = innerWidth; H = innerHeight; cv.width = W * dpr; cv.height = H * dpr; g.setTransform(dpr, 0, 0, dpr, 0, 0); }
+addEventListener("resize", size); size();
+
+const s = {blink: 0, smile: 0, frown: 0, jaw: 0, browUp: 0, browDown: 0, yaw: 0, pitch: 0, roll: 0,
+           energy: 0, arousal: .5, present: 0, pulse: 0, phase: 0, gaze: 0};
+const target = {...s};
+const B = (b, k) => (b && b[k]) || 0;
+
+function onState(m){
+  const f = m.face, a = m.affect || {};
+  target.energy = a.energy || 0; target.arousal = a.arousal == null ? .5 : a.arousal;
+  target.phase = (m.audio && m.audio.beat_phase) || 0;
+  target.present = f ? 1 : 0;
+  if (!f || !f.blend) return;
+  const b = f.blend;
+  target.blink = (B(b, "eyeBlinkLeft") + B(b, "eyeBlinkRight")) / 2;
+  target.smile = (B(b, "mouthSmileLeft") + B(b, "mouthSmileRight")) / 2;
+  target.frown = (B(b, "mouthFrownLeft") + B(b, "mouthFrownRight")) / 2;
+  target.jaw = B(b, "jawOpen");
+  target.browUp = (B(b, "browInnerUp") + B(b, "browOuterUpLeft") + B(b, "browOuterUpRight")) / 3;
+  target.browDown = (B(b, "browDownLeft") + B(b, "browDownRight")) / 2;
+  target.gaze = (B(b, "eyeLookOutLeft") - B(b, "eyeLookInLeft") + B(b, "eyeLookInRight") - B(b, "eyeLookOutRight")) / 2;
+  target.yaw = f.yaw || 0; target.pitch = f.pitch || 0; target.roll = f.roll || 0;
+}
+function connect(){
+  const ws = new WebSocket(`ws://${location.host}/`);
+  ws.onmessage = e => { const m = JSON.parse(e.data);
+    if (m.type === "state") onState(m);
+    else if (m.type === "event" && m.kind === "beat") s.pulse = 1; };
+  ws.onclose = () => setTimeout(connect, 1000);
+}
+connect();
+
+function hsl(h, sat, l, a = 1){ return `hsla(${h},${sat}%,${l}%,${a})`; }
+function frame(){
+  for (const k in target) if (k !== "pulse") s[k] += (target[k] - s[k]) * (k === "blink" ? .6 : .25);
+  s.pulse *= .9;
+  // colour: calm = teal, activated = warm orange (never through purple)
+  const hue = 175 - 150 * Math.min(1, Math.max(0, (s.arousal - .3) / .5));
+  const light = 8 + 14 * s.energy;
+  g.fillStyle = hsl(hue, 45, light); g.fillRect(0, 0, W, H);
+  const cx = W / 2 + s.yaw * 4, cy = H / 2 - s.pitch * 4, R = Math.min(W, H) * .26;
+  // beat ring
+  g.strokeStyle = hsl(hue, 70, 60, .25 + .6 * s.pulse); g.lineWidth = 2 + 10 * s.pulse;
+  g.beginPath(); g.arc(cx, cy, R * (1.25 + .08 * s.pulse), 0, Math.PI * 2); g.stroke();
+  g.save(); g.translate(cx, cy); g.rotate(s.roll * Math.PI / 180);
+  g.globalAlpha = .35 + .65 * s.present;
+  g.fillStyle = hsl(hue, 30, 88); g.beginPath(); g.ellipse(0, 0, R * (1 - Math.abs(s.yaw) / 180), R * 1.08, 0, 0, Math.PI * 2); g.fill();
+  const ink = hsl(hue, 40, 18);
+  // eyes and brows
+  for (const side of [-1, 1]) {
+    const ex = side * R * .38 + s.yaw * .9, ey = -R * .18;
+    const open = Math.max(.06, 1 - s.blink * 1.15);
+    g.fillStyle = ink; g.beginPath(); g.ellipse(ex, ey, R * .1, R * .13 * open, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = hsl(hue, 30, 88); g.beginPath(); g.arc(ex + s.gaze * R * .05 + R * .03, ey - R * .04 * open, R * .03 * open, 0, Math.PI * 2); g.fill();
+    const by = ey - R * (.24 + .14 * s.browUp - .08 * s.browDown);
+    const tilt = (s.browDown * .25 - s.browUp * .12) * side;
+    g.strokeStyle = ink; g.lineWidth = R * .045; g.lineCap = "round";
+    g.beginPath(); g.moveTo(ex - R * .13, by - tilt * R * .4); g.lineTo(ex + R * .13, by + tilt * R * .4); g.stroke();
+  }
+  // mouth: width with the smile, opening with the jaw, curve smile vs frown
+  const mw = R * (.32 + .22 * s.smile), my = R * .42, curve = R * (.22 * s.smile - .18 * s.frown), open = R * .5 * s.jaw;
+  g.fillStyle = ink; g.beginPath();
+  g.moveTo(-mw, my); g.quadraticCurveTo(0, my + curve, mw, my);
+  g.quadraticCurveTo(0, my + curve + open + R * .02, -mw, my); g.fill();
+  g.restore();
+  // beat phase bar
+  g.fillStyle = hsl(hue, 70, 60, .5); g.fillRect(0, H - 4, W * s.phase, 4);
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>

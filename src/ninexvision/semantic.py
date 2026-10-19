@@ -25,6 +25,17 @@ SIZE_MB = 210
 LOGIT_SCALE, LOGIT_BIAS = float(np.exp(4.764997)), -12.932437   # google/siglip-base-patch16-224
 SEQ = 64
 STRONG, WEAK = 0.5, 0.05     # match-strength bands (sigmoid scores): strong / possible / weak
+STANDOUT, STANDOUT_MIN = 20.0, 0.01   # short queries ("a cat") score low even on a hit: one far above the rest counts
+
+
+def band(score: float, median: float) -> str:
+    """strong / possible / weak. Absolute bands, plus "possible" for a score that stands far above the typical one
+    (SigLIP gives short, generic queries low absolute scores even where they match)."""
+    if score >= STRONG:
+        return "strong"
+    if score >= WEAK or (score >= STANDOUT_MIN and score >= STANDOUT * median):
+        return "possible"
+    return "weak"
 
 
 def model_dir() -> Path:
@@ -139,6 +150,7 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
         return {"query": query, "moments": []}
     q = _Model.get().texts([query])[0]
     score = 1 / (1 + np.exp(-(LOGIT_SCALE * (e.astype(np.float32) @ q) + LOGIT_BIAS)))
+    med = float(np.median(score))
     order = np.argsort(-score)
     t0, t1 = m.get("window") or (0.0, m["probe"]["duration"])
     step = sample_step(t1 - t0)
@@ -168,7 +180,7 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
             merged.append(mo)
     moments = merged
     for mo in moments:
-        mo["match"] = "strong" if mo["score"] >= STRONG else "possible" if mo["score"] >= WEAK else "weak"
+        mo["match"] = band(mo["score"], med)
         mo["at"] = f"{media.fmt_t(max(0, mo['start']))}-{media.fmt_t(mo['end'])}"
     sheet = None
     if moments:
@@ -181,7 +193,8 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
 
 
 def query_note(query: str) -> str:
-    note = ("score = SigLIP match strength (0-1): strong >= 0.5, possible >= 0.05, weak below. All-weak usually "
+    note = ("score = SigLIP match strength (0-1): strong >= 0.5, possible >= 0.05 (or far above the typical score), "
+            "weak below. All-weak usually "
             "means it is not there. Reliable for objects, people, clothing, places and colours; looser for "
             "actions. Check the sheet before you report a hit.")
     if re.search(r"\b(no|not|without|nobody|nothing|empty|none|isn't|aren't)\b", query.lower()):

@@ -48,13 +48,14 @@ input{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;
 <script>
 const k = new URLSearchParams(location.search).get("k") || "";
 const $ = id => document.getElementById(id);
+const esc = x => String(x).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"})[c]);
 function rows(el, items){
   el.innerHTML = items.map(([name, val, lo, hi, fmt, cls]) => {
     const n = val == null ? null : Number(val);
     const w = n == null ? 0 : Math.max(0, Math.min(1, (n - lo) / (hi - lo))) * 100;
     const centred = lo < 0 && hi > 0;
     const style = centred && n != null ? (n >= 0 ? `left:50%;width:${(n / hi) * 50}%` : `left:${50 + (n / -lo) * 50}%;width:${(-n / -lo) * 50}%`) : `width:${w}%`;
-    return `<div class="row"><span class="k">${name}</span><div class="bar ${centred ? "c" : ""} ${cls || ""}"><i style="${style}"></i></div><span class="v">${n == null ? "–" : (fmt ? fmt(n) : n.toFixed(2))}</span></div>`;
+    return `<div class="row"><span class="k">${esc(name)}</span><div class="bar ${centred ? "c" : ""} ${cls || ""}"><i style="${style}"></i></div><span class="v">${n == null ? "–" : (fmt ? fmt(n) : n.toFixed(2))}</span></div>`;
   }).join("");
 }
 let ws, queries = [];
@@ -101,7 +102,7 @@ function event(e){
   const el = $("events");
   el.textContent = `${e.t.toFixed(2).padStart(8)}  ${e.kind}  ${extra}\n` + el.textContent.slice(0, 6000);
 }
-function chips(){ $("chips").innerHTML = queries.map(q => `<span title="remove">${q} ×</span>`).join("");
+function chips(){ $("chips").innerHTML = queries.map(q => `<span title="remove">${esc(q)} ×</span>`).join("");
   [...$("chips").children].forEach((c, i) => c.onclick = () => send({cmd: "watch_for", remove: [queries[i]], id: "wf"})); }
 $("q").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.value.trim()) { send({cmd: "watch_for", add: [e.target.value.trim()], id: "wf"}); e.target.value = ""; } });
 const img = $("frame");

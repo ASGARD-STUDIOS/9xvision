@@ -9,6 +9,8 @@ import time
 import urllib.error
 import urllib.request
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 from PIL import Image, ImageDraw
@@ -44,6 +46,7 @@ def test_osc_messages_and_addresses():
     assert got["/9xv/affect/arousal"][0] == pytest.approx(0.6) and "/9xv/affect/components/db" not in got
     assert got["/9xv/face/blend/jawOpen"][0] == pytest.approx(0.2)
     assert got["/9xv/hands/right/gesture"] == ["Victory"] and "/9xv/watch/someone_waving" in got
+    assert got["/9xv/face/present"] == [1.0] and got["/9xv/hands/left/present"] == [0.0] and got["/9xv/hands/right/present"] == [1.0]
     assert _osc_parse(bus.osc_addresses({"type": "event", "kind": "beat", "t": 1.0, "n": 4})[0]) == ("/9xv/event/beat", [4])
 
 
@@ -69,19 +72,45 @@ def test_streaming_beats_land_on_the_clicks():
     assert abs(np.median(err)) < 0.03 and np.abs(err).max() < 0.05
 
 
+def test_beats_survive_noise_bursts_and_never_skip():
+    """Off-beat noise bursts must not blind the onset detector or the tempo, and once locked no beat is skipped."""
+    y, clicks = _clicks(seconds=60)
+    rng = np.random.default_rng(1)
+    for b in (4.25, 17.75, 31.25, 44.75):
+        i = int(b * SR)
+        y[i:i + SR // 4] += rng.normal(0, 0.5, SR // 4).astype(np.float32)
+    a, beats, onsets, first_bpm = StreamingAudio(), [], [], None
+    for k in range(0, len(y), 512):
+        a.feed(y[k:k + 512])
+        beats += [e["at"] for e in a.events if e["kind"] == "beat"]
+        onsets += [e["t"] for e in a.events if e["kind"] == "onset"]
+        a.events.clear()
+        if first_bpm is None and a.bpm:
+            first_bpm = a.t
+    found = sum(1 for c in clicks if any(abs(o - c) < 0.05 for o in onsets))
+    assert found / len(clicks) >= 0.9, (found, len(clicks))
+    assert first_bpm is not None and first_bpm < 10, first_bpm
+    locked = np.array([b for b in beats if b > 15])
+    assert np.diff(locked).max() < 0.75 and np.diff(locked).min() > 0.25, np.diff(locked)
+
+
 def test_pitch_and_speech():
     t = np.arange(2048) / SR
     assert yin(0.5 * np.sin(2 * np.pi * 220 * t))[0] == pytest.approx(220, abs=1)
     assert yin(np.random.default_rng(0).normal(0, 0.3, 2048))[0] == 0.0
     s = np.zeros(SR * 4, np.float32)
     tt = np.arange(SR) / SR
-    s[SR:2 * SR] = 0.3 * sum(np.sin(2 * np.pi * (140 + 20 * np.sin(2 * np.pi * 3 * tt)) * k * tt) / k for k in range(1, 6))
+    phase = 2 * np.pi * np.cumsum(140 + 20 * np.sin(2 * np.pi * 3 * tt)) / SR       # a voice gliding 120-160 Hz
+    s[SR:2 * SR] = 0.3 * sum(np.sin(k * phase) / k for k in range(1, 6))
     a, ev = StreamingAudio(), []
     for k in range(0, len(s), 512):
         a.feed(s[k:k + 512])
         ev += [(e["kind"], e["t"]) for e in a.events if e["kind"].startswith("speech")]
         a.events.clear()
     assert [k for k, _ in ev] == ["speech_start", "speech_end"] and 1.0 <= ev[0][1] < 1.4 and 2.0 <= ev[1][1] < 2.8
+    tone, a = (0.3 * np.sin(2 * np.pi * 440 * np.arange(SR * 3) / SR)).astype(np.float32), StreamingAudio()
+    a.feed(tone)
+    assert not any(e["kind"] == "speech_start" for e in a.events) and a.state["pitch_hz"] == pytest.approx(440, abs=2)
 
 
 def test_affect_events_and_arousal():
@@ -102,6 +131,23 @@ def test_affect_events_and_arousal():
         assert k in kinds, (k, kinds)
     assert kinds.count("shake") == 1 and kinds.count("nod") == 1
     assert ar[4.0] == pytest.approx(0.5, abs=0.05) and ar[7.0] > 0.7
+
+
+def test_sustained_nodding_and_wide_shakes():
+    """Nodding along for 17 s gives a nod every ~1.5 s; a wide, fast shake is a shake, not glances away."""
+    a, fps = affect.Affect(), 15
+    face = lambda yaw, pitch: {"faces": [{"yaw": yaw, "pitch": pitch, "blend": {}}]}
+    for i in range(fps * 40):
+        t = i / fps
+        pitch = 12 * math.sin(2 * math.pi * 1.0 * (t - 2)) if 2 < t < 19 else 0.0
+        yaw = 35 * math.sin(2 * math.pi * 2.0 * (t - 25)) if 25 < t < 28 else 0.0
+        a.update(t, None, {"motion": 0.01}, face(yaw + np.random.default_rng(i).normal(0, 0.5), pitch))
+    nods = [e["t"] for e in a.events if e["kind"] == "nod"]
+    shakes = [e["t"] for e in a.events if e["kind"] == "shake"]
+    kinds = [e["kind"] for e in a.events]
+    assert 9 <= len(nods) <= 14 and all(2 < t < 20 for t in nods), nods
+    assert 1 <= len(shakes) <= 3 and all(25 < t < 29 for t in shakes), shakes
+    assert "look_away" not in kinds, kinds
 
 
 def _sync_clip(path, seconds=10):
@@ -140,6 +186,29 @@ def test_live_engine_keeps_sound_and_picture_in_sync(tmp_path, monkeypatch):
     gaps = [ons[np.argmin(abs(ons - c))] - c for c in flash_on if len(ons)]
     assert len(states) > 100 and len(flash_on) >= 6
     assert np.median(np.abs(gaps)) < 0.05      # sound and picture agree within ~a frame
+
+
+def test_each_state_carries_sound_and_picture_of_the_same_moment(tmp_path, monkeypatch):
+    """Alternating 1 s blocks: white with a 440 Hz tone, then grey and silent. Every state away from a block edge
+    must see the tone exactly when it sees white (arrival through the pipes differs by ~0.6 s on file sources)."""
+    monkeypatch.setenv("NINEXVISION_HOME", str(tmp_path / "h"))
+    fps, W, H, secs, sr = 30, 160, 90, 10, 48000
+    v, raw, clip = tmp_path / "b.v.mp4", tmp_path / "b.f32", tmp_path / "blocks.mp4"
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{W}x{H}", "-r", str(fps),
+                          "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", str(v)], stdin=subprocess.PIPE)
+    for i in range(fps * secs):
+        p.stdin.write(np.full((H, W), 250 if (i // fps) % 2 else 60, np.uint8).tobytes())
+    p.stdin.close(); p.wait()
+    t = np.arange(sr * secs) / sr
+    (0.3 * np.sin(2 * np.pi * 440 * t) * ((t.astype(int) % 2) == 1)).astype(np.float32).tofile(raw)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(v), "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", str(raw),
+                    "-c:v", "copy", "-c:a", "aac", "-shortest", str(clip)], check=True)
+    out = tmp_path / "out.jsonl"
+    live.Live(str(clip), face=False, ws_port=None, jsonl=str(out), log=lambda m: None).run(9)
+    states = [json.loads(x) for x in out.read_text().splitlines() if '"state"' in x]
+    away = [m for m in states if 0.15 < m["t"] % 1 < 0.85]
+    agree = [(m["video"]["brightness"] > 0.6) == (m["audio"]["db"] > -40) for m in away]
+    assert len(away) > 60 and np.mean(agree) >= 0.97, np.mean(agree)
 
 
 def _free_port():
@@ -195,9 +264,16 @@ def test_image_grid_and_native_regions(tmp_path, monkeypatch):
     assert crop[650, 200].tolist() == [200, 30, 30]          # native pixels, the red block at x=3560, y=2383
     small = images.inspect(str(p), "0.9,0.9,0.02,0.02", ocr=False)
     assert small["scale"] == 4.0 and max(small["size"]) == 336       # enlarged, capped at 4x
-    for bad in ("Z9", "1,2,3", "B2:Q1"):
+    for bad in ("Z9", "1,2,3", "B2:Q1", "0,0,0,0", "10,10,-5,20"):
         with pytest.raises(ValueError):
             images.inspect(str(p), bad, ocr=False)
+    whole = images.inspect(str(p), "A1:E3", ocr=False)               # a region bigger than an agent can see
+    assert max(whole["size"]) == render.MAX_EDGE and whole["scale"] < 1 and "note" in whole
+    deep = np.zeros((300, 400), np.uint16)
+    deep[:, 200:] = 40000                                            # a 16-bit greyscale scan
+    Image.fromarray(deep).save(tmp_path / "deep.png")
+    g, _ = images.open_image(tmp_path / "deep.png")
+    assert g[10, 10].tolist() == [0, 0, 0] and 150 < g[10, 300, 0] < 160
 
 
 def test_album_duplicates_and_text(tmp_path, monkeypatch):
@@ -218,7 +294,8 @@ def test_album_duplicates_and_text(tmp_path, monkeypatch):
     assert len(m["images"]) == 4 and m["duplicates"] == [[2, 3]]
     assert "near-duplicates: #2 = #3" in (ad / "INDEX.md").read_text()
     from ninexvision import tools
-    assert tools.look(m["id"], "image:1")["path"].endswith("img0.png")
+    lk = tools.look(m["id"], "image:1")
+    assert lk["original"].endswith("img0.png") and Path(lk["original"]).is_absolute() and lk["path"].endswith(".jpg")
     assert any(x.get("images") == 4 for x in tools.list_watches())
 
 
@@ -241,3 +318,13 @@ def test_gestures_from_mediapipe_samples(tmp_path):
         assert tr.latest["hands"][0]["gesture"] == "Thumb_Up"
     finally:
         tr.close()
+
+
+def test_monitor_pages_escape_user_text():
+    from importlib import resources
+    html = resources.files("ninexvision").joinpath("live_monitor.html").read_text()
+    assert "${esc(q)}" in html and "${esc(name)}" in html and "${q}" not in html and "${name}" not in html
+    w = live.WatchFor([])
+    w.set(["<img src=x onerror=alert(1)>\n\x07", "a" * 500, "  a  dog  "])
+    assert w.queries[1] == "a" * 200 and w.queries[2] == "a dog" and "\x07" not in w.queries[0]
+    w.close()

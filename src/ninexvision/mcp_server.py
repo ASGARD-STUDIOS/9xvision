@@ -25,7 +25,22 @@ mcp = _Server("9xvision", instructions=(
 
 
 def _img(path: str) -> Image:
-    return Image(path=path)
+    """Every image goes out as PNG or JPEG, upright, with the long edge at most render.MAX_EDGE."""
+    from PIL import Image as PILImage
+    from .render import MAX_EDGE
+    try:
+        with PILImage.open(path) as im:
+            ok = im.format in ("PNG", "JPEG") and max(im.size) <= MAX_EDGE and not im.getexif().get(0x0112, 1) > 1
+    except Exception:
+        ok = False
+    if ok:
+        return Image(path=path)
+    import io
+    from .images import _resize, open_image
+    rgb, _ = open_image(path)
+    buf = io.BytesIO()
+    PILImage.fromarray(_resize(rgb, MAX_EDGE)).save(buf, "JPEG", quality=88)
+    return Image(data=buf.getvalue(), format="jpeg")
 
 
 def _explained(fn):
@@ -63,8 +78,8 @@ def watch(source: str, mode: str = "auto", force: bool = False, start: str | Non
 def look(watch_id: str, what: str) -> list:
     """Show an artefact of a watch: sheet:N, timeline:N, view:N (full-res screen), shot:N (keyframe),
     page:N (stitched long page), colour (colour script)."""
-    p = tools.look(watch_id, what)["path"]
-    return [f"{what}: {p}", _img(p)]
+    r = tools.look(watch_id, what)
+    return [f"{what}: {r.get('original', r['path'])}", _img(r["path"])]
 
 
 @mcp.tool()
@@ -156,9 +171,9 @@ def live_start(source: str = "camera", watch_for: list[str] | None = None, hands
                mic: str = "auto", osc: str | None = None) -> str:
     """Start live perception in the background: source = "camera" (or "camera:N"/name), "screen" ("screen:N"), a
     stream URL (rtsp/srt/YouTube live) or a file played in real time. It tracks motion, cuts, colour, sound (level,
-    beat, voice pitch, speech), faces (52 blendshapes, head pose: expression, not feelings; no identities), optional
-    hands (gesture, pinch) and body, affect (energy, arousal vs this session, expression valence, engagement) and
-    visual triggers (watch_for: ["someone waving"]). It also streams to a monitor page and to OSC if given.
+    beat, voice pitch, speech), faces (51 blendshapes, head pose: expression, not feelings; no identities), optional
+    hands (gesture, pinch = thumb and index touching) and body, affect (energy, arousal vs this session, expression valence, engagement) and
+    visual triggers (watch_for: ["a dog"]). It also streams to a monitor page and to OSC if given.
     Only start the camera or microphone when the user asked for it. Then use live_now, live_snapshot, live_stop."""
     from . import live
     args = [source, "--mic", mic]
@@ -215,7 +230,7 @@ def live_watch_for(add: list[str] | None = None, remove: list[str] | None = None
 def live_stop() -> str:
     """Stop the live session (camera, microphone and streams close)."""
     from . import live
-    return json.dumps(live.request({"cmd": "stop"}))
+    return json.dumps(live.stop())
 
 
 @mcp.tool()

@@ -65,6 +65,7 @@ class StreamingAudio:
         self.speaking = False
         self.quiet_run = 0
         self.events: list[dict] = []
+        self.hist: deque = deque(maxlen=int(3 * FPS))    # (hop time, state) for reading the sound at a frame's time
         self.state: dict = {"db": -120.0, "onset": 0.0, "bpm": None, "beat_phase": None, "pitch_hz": None,
                             "voiced": False, "centroid_hz": None, "pitch_var": None, "onset_rate": 0.0}
 
@@ -92,10 +93,16 @@ class StreamingAudio:
         db = max(-120.0, 20 * np.log10(rms + 1e-9))
         lin = np.expm1(mag)
         centroid = float((lin * np.arange(len(lin))).sum() / (lin.sum() + 1e-9) * SR / NFFT)
-        # onset strength relative to the recent spread (a z-score), and a peak-picked onset event
+        # onset strength against the recent median and its median absolute deviation: a robust z-score, so one
+        # loud burst does not inflate the spread and hide the next two seconds of onsets
         h = np.array(self.flux_hist)
-        z = (flux - h.mean()) / (h.std() + 1e-9) if len(h) > 8 else 0.0
+        if len(h) > 8:
+            med = float(np.median(h))
+            z = (flux - med) / (1.4826 * float(np.median(np.abs(h - med))) + 0.05 * med + 1e-3)
+        else:
+            z = 0.0
         st = self.state
+        z = min(float(z), 10.0)                 # a click in digital silence has no spread to measure against
         st.update(db=round(db, 1), onset=round(float(max(0.0, z)), 2), centroid_hz=round(centroid) if db > -60 else None)
         if z > 2.5 and db > -50 and (not self.onsets or t - self.onsets[-1] > 0.08):
             self._event("onset", strength=round(float(z), 1))
@@ -123,9 +130,29 @@ class StreamingAudio:
                 self.next_beat += self.period
             st["beat_phase"] = round(float(1 - ((self.next_beat - t) / self.period) % 1.0), 3)
         st["onset_rate"] = round(len(self.onsets) / 2.0, 1)    # onsets per second over the last 2 s
+        self.hist.append((t, dict(st)))
+
+    def state_at(self, t: float) -> dict:
+        """The sound state describing stream time t (the hop whose window is centred on t), with the beat phase
+        read from the current grid at t. Pipes deliver audio and video with different delays, so the newest audio
+        state can be from a different moment than the newest frame."""
+        # a hop's spectrum and level cover the NFFT samples before its time, centred NFFT/2 earlier
+        target = t + NFFT / 2 / SR
+        st = self.state
+        for ht, s in reversed(self.hist):
+            if ht <= target:
+                st = s
+                break
+        else:
+            if self.hist:
+                st = self.hist[0][1]
+        st = dict(st)
+        if self.next_beat is not None and self.period:
+            st["beat_phase"] = round(float((t - self.next_beat) / self.period % 1.0), 3)
+        return st
 
     def _tempo(self) -> None:
-        env = np.array(self.env, np.float32)
+        env = np.log1p(np.array(self.env, np.float32))      # compressed, so a few loud bursts can't drown the pulse
         e = np.maximum(env - np.convolve(env, np.ones(int(FPS)) / int(FPS), mode="same"), 0)
         e = e / (e.std() + 1e-9)
         bpm, clarity = tempo(e)
@@ -152,10 +179,13 @@ class StreamingAudio:
         nb = last_beat
         while nb <= self.t:
             nb += self.period
-        if self.next_beat is None or abs(nb - self.next_beat) > 0.25 * self.period:
-            self.next_beat = nb                              # re-lock when the prediction has drifted
+        if self.next_beat is None:
+            self.next_beat = nb
         else:
-            self.next_beat += 0.25 * (nb - self.next_beat)   # nudge toward the measured phase
+            # compare phases, not beat numbers: a beat that is due right now and the measured next one are the
+            # same grid, and treating them as a full-period drift used to skip that beat
+            d = (nb - self.next_beat + self.period / 2) % self.period - self.period / 2
+            self.next_beat += d if abs(d) > 0.25 * self.period else 0.25 * d
         self.state["bpm"] = self.bpm
 
     def _speech(self, voiced: bool, db: float) -> None:
@@ -163,7 +193,9 @@ class StreamingAudio:
         self.quiet_run = 0 if voiced and db > -45 else self.quiet_run + 1
         hops2 = FPS / 2      # pitch is computed every second hop
         share = sum(self.voiced_hist) / max(1, self.voiced_hist.maxlen)
-        if not self.speaking and share >= 0.5:
+        recent = list(self.f0_hist)[-12:]                    # ~0.5 s of voiced pitch
+        moving = len(recent) >= 6 and float(np.std(recent)) * 12 >= 0.25   # speech glides; a held pure tone does not
+        if not self.speaking and share >= 0.5 and moving:
             self.speaking = True
             self._event("speech_start")
         elif self.speaking and self.quiet_run >= 0.6 * hops2:

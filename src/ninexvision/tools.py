@@ -207,6 +207,18 @@ def look(watch: str, what: str) -> dict:
     if rel is None:
         ids = list(range(1, len(items) + 1)) if isinstance(items, list) else sorted(items)
         raise ValueError(f"no {kind}:{k}; this watch has {kind}:{ids[0]}..{ids[-1]}" if len(ids) > 1 else f"no {kind}:{k}; only {kind}:{ids[0]}")
+    if kind == "image":       # an album original: hand over a viewable copy (rotated, JPEG, capped), keep the original
+        from .images import open_image, _resize
+        src = Path(rel)
+        if not src.exists():
+            raise FileNotFoundError(f"image:{k} was {src}, which no longer exists")
+        out = Path(d) / "view" / f"image-{k:04d}.jpg"
+        if not out.exists() or out.stat().st_mtime < src.stat().st_mtime:
+            out.parent.mkdir(exist_ok=True)
+            rgb, _ = open_image(src)
+            from PIL import Image as _I
+            _I.fromarray(_resize(rgb, render.MAX_EDGE)).save(out, quality=90)
+        return {"path": str(out), "original": str(src)}
     return {"path": str(Path(d) / rel)}
 
 

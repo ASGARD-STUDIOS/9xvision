@@ -218,7 +218,7 @@ class Capture:
 
 
 class WatchFor:
-    """Visual triggers by description ("someone waving"), scored with SigLIP on the newest frame a few times a second.
+    """Visual triggers by description ("a dog"), scored with SigLIP on the newest frame a few times a second.
     A trigger turns on after two scores >= threshold and off after two below a third of it."""
 
     def __init__(self, queries: list[str], threshold: float = 0.1, every: float = 0.5):
@@ -237,7 +237,8 @@ class WatchFor:
 
     def set(self, queries: list[str]) -> None:
         with self._lock:
-            self.queries = list(dict.fromkeys(q.strip() for q in queries if q.strip()))
+            clean = (" ".join("".join(c for c in str(q) if c.isprintable()).split())[:200] for q in queries)
+            self.queries = list(dict.fromkeys(q for q in clean if q))[:16]
             for d in (self.scores, self.on, self.runs):
                 for k in list(d):
                     if k not in self.queries:
@@ -439,7 +440,7 @@ class Live:
                     self.tracker.submit(rgb, t)
                     body = self.tracker.latest
                 self.watch.offer(rgb, t)
-                aud = dict(self.audio.state) if self.audio else None
+                aud = self.audio.state_at(t) if self.audio else None
                 aff = self.affect.update(t, aud, video, body)
                 for e in self.affect.events:
                     self._event(e)
@@ -485,6 +486,12 @@ class Live:
         self.watch.close()
         if self.ws:
             self.ws.close()
+        for f in self.dir.glob("frame-*.jpg"):       # `live now` frames are working copies; snapshots stay
+            f.unlink(missing_ok=True)
+        try:
+            self.dir.rmdir()                          # only when nothing else (a snapshot) is in it
+        except OSError:
+            pass
         try:
             sf = session_file()
             if sf.exists() and json.loads(sf.read_text()).get("pid") == os.getpid():
@@ -524,6 +531,8 @@ class Live:
             t = self.latest.get("t", 0.0)
             p = self.dir / f"frame-{t:09.2f}.jpg"
             cv2.imwrite(str(p), cv2.cvtColor(self.latest_rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, 90])
+            for old in sorted(self.dir.glob("frame-*.jpg"))[:-8]:     # keep the newest few; all go at stop
+                old.unlink(missing_ok=True)
             return {"path": str(p), "t": t, "size": list(self.latest_rgb.shape[1::-1])}
         if cmd == "snapshot":
             return snapshot(self, float(req.get("seconds") or 30), watch=req.get("watch", True))
@@ -627,7 +636,8 @@ def live_summary(info: dict) -> str:
                  f"{media.fmt_t(ar[1])}" if ar else "- arousal: n/a")
         v = mean("valence")
         if v is not None:
-            L.append(f"- face expression valence (expression, not feeling): mean {v:+.2f}")
+            L.append(f"- face expression valence (expression, not feeling; against this face's own resting look, "
+                     f"so someone who smiles throughout stays near 0): mean {v:+.2f}")
         smiles = [s["smile"] for s in st if s.get("smile") is not None]
         if smiles:
             L.append(f"- smiling (smile > 0.5) {sum(x > 0.5 for x in smiles) / len(smiles):.0%} of the time a face was visible")
@@ -644,7 +654,8 @@ def live_summary(info: dict) -> str:
             L.append(f"- {label}: " + ", ".join(f"{media.fmt_t(x['t'])}{extra(x)}" for x in items))
     beats = counts.get("beat", [])
     if beats:
-        L.append(f"- beat: ~{beats[-1].get('bpm')} BPM ({len(beats)} beats)")
+        L.append(f"- beat (streaming estimate during the session, may differ from the Sound section's offline "
+                 f"analysis): ~{beats[-1].get('bpm')} BPM ({len(beats)} beats)")
     return "\n".join(L)
 
 
@@ -675,6 +686,26 @@ def request(cmd: dict, timeout: float = 300) -> dict:
         return _request(url, cmd, timeout)
     except ConnectionClosed:
         raise RuntimeError("the live session closed the connection (did it stop? see ~/.9xvision/live/last.log)") from None
+
+
+def stop(wait: float = 8.0) -> dict:
+    """Stop the background session and wait until it has exited (so a new one can start right away)."""
+    info = session()
+    if not info:
+        return {"stopped": False, "note": "no live session was running"}
+    try:
+        request({"cmd": "stop"}, timeout=10)
+    except RuntimeError:
+        pass
+    end = time.time() + wait
+    while time.time() < end:
+        try:
+            os.kill(info["pid"], 0)
+        except OSError:
+            session_file().unlink(missing_ok=True)
+            return {"stopped": True}
+        time.sleep(0.1)
+    return {"stopped": False, "note": f"pid {info['pid']} is still exiting"}
 
 
 def _request(url: str, cmd: dict, timeout: float) -> dict:

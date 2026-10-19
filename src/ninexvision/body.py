@@ -1,6 +1,6 @@
 """Face, hand and body tracking for live input, through MediaPipe in a separate environment (see _body_worker.py).
 
-Faces give 52 blendshapes (the ARKit set: smile, brow raise, jaw open, blinks, gaze...) and head pose; hands give a
+Faces give 51 blendshapes (the ARKit set minus tongueOut: smile, brow raise, jaw open, blinks, gaze...) and head pose; hands give a
 gesture, position and pinch; the body gives a few key points. These describe what a face or body DOES, not what a
 person feels. No identities: nothing here recognises who someone is."""
 from __future__ import annotations

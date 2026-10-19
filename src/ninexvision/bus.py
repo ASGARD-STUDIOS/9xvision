@@ -79,13 +79,31 @@ def osc_addresses(msg: dict, prefix: str = "/9xv") -> list[bytes]:
     for key in ("video", "audio", "face", "hands", "body", "affect", "watch"):
         if msg.get(key) is not None:
             walk(f"{prefix}/{key}", msg[key])
+    # presence flags, so a receiver can drop values that are only stale (nothing is sent for an absent face/hand)
+    out.append(osc_message(f"{prefix}/face/present", 1.0 if msg.get("face") else 0.0))
+    if msg.get("hands") is not None:
+        seen = {h.get("hand", "").lower() for h in msg["hands"]}
+        for side in ("left", "right"):
+            out.append(osc_message(f"{prefix}/hands/{side}/present", 1.0 if side in seen else 0.0))
     return out
+
+
+def parse_target(target: str) -> tuple[str, int]:
+    """"host:port" or just "port" (this machine) -> (host, port), with a readable error."""
+    host, _, port = target.rpartition(":")
+    if not port.isdigit() or not 1 <= int(port) <= 65535:
+        raise ValueError(f"OSC target {target!r}: use HOST:PORT or PORT, e.g. 127.0.0.1:9000")
+    host = host.strip("[]") or "127.0.0.1"
+    try:
+        socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)
+    except socket.gaierror:
+        raise ValueError(f"OSC target {target!r}: unknown host {host!r}") from None
+    return host, int(port)
 
 
 class OscOut:
     def __init__(self, target: str):
-        host, _, port = target.rpartition(":")
-        self.addr = (host or "127.0.0.1", int(port))
+        self.addr = parse_target(target)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def send(self, msg: dict) -> None:
@@ -155,8 +173,9 @@ class WsServer:
             conn.authed = self._has_token(req.path)
             return None
         path = req.path.split("?")[0]
-        if path in ("/", "/index.html"):
-            html = resources.files("ninexvision").joinpath("live_monitor.html").read_bytes()
+        pages = {"/": "live_monitor.html", "/index.html": "live_monitor.html", "/mirror": "live_mirror.html"}
+        if path in pages:
+            html = resources.files("ninexvision").joinpath(pages[path]).read_bytes()
             return Response(200, "OK", Headers([("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "no-store")]), html)
         if path == "/frame.jpg":
             if not self._has_token(req.path):
