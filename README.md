@@ -10,12 +10,12 @@ Everything runs locally. There are no API keys and nothing is uploaded.
 
 ## Benchmark
 
-RESULTS_PLACEHOLDER
+Results are being finalised (A/B of Claude Sonnet 5.5 with and without the kit on an app recording, a music video, an 8-minute talk segment and a 74-minute keynote; harness in `bench/`).
 
 ## Install
 
 ```bash
-uv tool install git+https://github.com/<owner>/9xvision     # CLI: 9xvision, MCP server: 9xvision-mcp
+uv tool install git+https://github.com/koto9x/9xvision     # CLI: 9xvision, MCP server: 9xvision-mcp
 brew install ffmpeg                                          # required
 brew install whisper-cpp tesseract                           # optional: local transcripts, non-macOS OCR
 ```
@@ -23,14 +23,14 @@ brew install whisper-cpp tesseract                           # optional: local t
 **Claude Code plugin** (skill + MCP server):
 
 ```
-/plugin marketplace add <owner>/9xvision
+/plugin marketplace add koto9x/9xvision
 /plugin install 9xvision@9x
 ```
 
 **Any MCP client** (Codex, Cursor, Claude Desktop):
 
 ```json
-{ "mcpServers": { "9xvision": { "command": "uvx", "args": ["--from", "git+https://github.com/<owner>/9xvision", "9xvision-mcp"] } } }
+{ "mcpServers": { "9xvision": { "command": "uvx", "args": ["--from", "git+https://github.com/koto9x/9xvision", "9xvision-mcp"] } } }
 ```
 
 **Any agent with a shell:** put `skills/9xvision/SKILL.md` in its instructions and `9xvision` on PATH.
