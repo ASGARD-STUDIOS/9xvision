@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import urllib.request
 from pathlib import Path
 
@@ -23,7 +24,7 @@ FILES = {"vision_model_quantized.onnx": "onnx/vision_model_quantized.onnx",
 SIZE_MB = 210
 LOGIT_SCALE, LOGIT_BIAS = float(np.exp(4.764997)), -12.932437   # google/siglip-base-patch16-224
 SEQ = 64
-STRONG, WEAK = 0.10, 0.01    # match-strength bands (sigmoid scores) used to label hits
+STRONG, WEAK = 0.5, 0.05     # match-strength bands (sigmoid scores): strong / possible / weak
 
 
 def model_dir() -> Path:
@@ -158,9 +159,12 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
                 j += d
             mo["start" if d < 0 else "end"] = (min if d < 0 else max)(mo["start" if d < 0 else "end"], float(t[j]))
         mo["start"], mo["end"] = round(max(t0, mo["start"] - step / 2), 2), round(min(t1, mo["end"] + step / 2), 2)
-    merged: list[dict] = []   # extended ranges can overlap: keep one moment per range, best score
+    merged: list[dict] = []   # extended ranges can overlap: union them, keep the best score and its time
     for mo in sorted(moments, key=lambda x: -x["score"]):
-        if not any(o["start"] <= mo["t"] <= o["end"] for o in merged):
+        o = next((o for o in merged if mo["start"] <= o["end"] and o["start"] <= mo["end"]), None)
+        if o:
+            o["start"], o["end"] = min(o["start"], mo["start"]), max(o["end"], mo["end"])
+        else:
             merged.append(mo)
     moments = merged
     for mo in moments:
@@ -173,9 +177,13 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
         size = render.contact_sheet(frames, [f"{media.fmt_t(mo['t'])} {mo['match']} {mo['score']:.2f}" for mo in moments], p,
                                     title=f"visual search: {query}"[:90])
         sheet = {"path": str(p), "tokens": render.token_estimate(*size)}
-    return {"query": query, "sampled_every_s": step, "moments": moments, "sheet": sheet,
-            "note": "score = SigLIP match strength (0-1). strong >= 0.10, possible >= 0.01; "
-                    "all-weak results usually mean it is not in the video. Confirm with frame/zoom."}
+    note = ("score = SigLIP match strength (0-1): strong >= 0.5, possible >= 0.05, weak below. All-weak usually "
+            "means it is not in the video. Reliable for objects, people, clothing, places and colours; looser for "
+            "actions. Check the sheet before you report a hit.")
+    if re.search(r"\b(no|not|without|nobody|nothing|empty|none|isn't|aren't)\b", query.lower()):
+        note = ("this query uses negation ('no', 'without', 'empty'...), which image-text models cannot do: they match "
+                "the things named. Search for what IS there instead. " + note)
+    return {"query": query, "sampled_every_s": step, "moments": moments, "sheet": sheet, "note": note}
 
 
 def store_meta(wdir: Path) -> None:

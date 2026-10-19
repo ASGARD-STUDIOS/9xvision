@@ -70,7 +70,7 @@ def look(watch_id: str, what: str) -> list:
 def zoom(watch_id: str, start: str, end: str, n: int = 12) -> list:
     """Dense timestamped grid of frames between start and end (mm:ss.s or seconds), up to 30 frames."""
     r = tools.zoom(watch_id, start, end, n)
-    return [json.dumps({k: r[k] for k in ("times", "tokens")}), _img(r["path"])]
+    return [json.dumps({k: r[k] for k in ("times", "tokens", "note") if k in r}), _img(r["path"])]
 
 
 @mcp.tool()
@@ -78,7 +78,7 @@ def zoom(watch_id: str, start: str, end: str, n: int = 12) -> list:
 def frame(watch_id: str, at: str, crop: str | None = None) -> list:
     """Full-resolution frame at a time. crop = "x,y,w,h" in pixels or 0-1 fractions, for reading small detail."""
     r = tools.frame(watch_id, at, crop)
-    return [json.dumps({k: r[k] for k in ("t", "size", "source_px")}), _img(r["path"])]
+    return [json.dumps({k: r[k] for k in ("t", "size", "source_px", "note") if k in r}), _img(r["path"])]
 
 
 @mcp.tool()
@@ -86,7 +86,7 @@ def frame(watch_id: str, at: str, crop: str | None = None) -> list:
 def diff(watch_id: str, a: str, b: str) -> list:
     """Compare two moments: side-by-side plus highlighted changed regions (pixel boxes in source coordinates)."""
     r = tools.diff(watch_id, a, b)
-    return [json.dumps({k: r[k] for k in ("changed_pct", "regions")}), _img(r["path"])]
+    return [json.dumps({k: r[k] for k in ("changed_pct", "regions", "times", "note") if k in r}), _img(r["path"])]
 
 
 @mcp.tool()

@@ -12,19 +12,27 @@ from .watch import load, watches_root
 
 def zoom(watch: str, start, end, n: int = 12) -> dict:
     d, m = load(watch)
-    t0, t1 = media.parse_t(start), media.parse_t(end)
+    a0, a1 = media.parse_t(start), media.parse_t(end)
     lo = m["probe"].get("offset", 0.0)
     hi = lo + m["probe"]["duration"]
-    t0, t1 = max(lo, min(t0, hi)), max(lo, min(t1, hi))
+    t0, t1 = max(lo, min(a0, hi)), max(lo, min(a1, hi))
     if t1 <= t0:
-        t1 = min(hi, t0 + 1.0)
+        t0, t1 = max(lo, min(t0, hi - 1.0)), hi if t0 >= hi - 1.0 else min(hi, t0 + 1.0)
     n = max(2, min(int(n), 30))
     times = list(np.linspace(t0, t1, n))
     frames = [media.grab_frame(m["file"], t, max_edge=720) for t in times]
     p = d / "zoom" / f"zoom_{t0:.2f}-{t1:.2f}_{n}.jpg"
     size = render.contact_sheet(frames, [media.fmt_t(t) for t in times], p,
                                 title=f"zoom {media.fmt_t(t0)}-{media.fmt_t(t1)}  step {(t1 - t0) / (n - 1):.2f}s")
-    return {"path": str(p), "size": list(size), "tokens": render.token_estimate(*size), "times": [round(t, 2) for t in times]}
+    out = {"path": str(p), "size": list(size), "tokens": render.token_estimate(*size), "times": [round(t, 2) for t in times]}
+    if abs(a0 - t0) > 0.06 or abs(a1 - t1) > 0.06:
+        out["note"] = (f"asked for {_t(a0)}-{_t(a1)}; the video covers {media.fmt_t(lo)}-{media.fmt_t(hi)}, "
+                       f"so this shows {media.fmt_t(t0)}-{media.fmt_t(t1)}")
+    return out
+
+
+def _t(x: float) -> str:
+    return media.fmt_t(x) if x >= 0 else f"{x:g} s"
 
 
 def frame(watch: str, at, crop: str | None = None, max_edge: int = render.MAX_EDGE) -> dict:
@@ -55,13 +63,16 @@ def frame(watch: str, at, crop: str | None = None, max_edge: int = render.MAX_ED
     out = {"path": str(p), "size": list(im.size), "source_px": [W, H], "t": round(t, 2),
            "tokens": render.token_estimate(*im.size)}
     if abs(asked - t) > 0.06:
-        out["note"] = f"asked for {media.fmt_t(asked)}, which is outside {media.fmt_t(lo)}-{media.fmt_t(hi)}; showing {media.fmt_t(t)}"
+        out["note"] = f"asked for {_t(asked)}, which is outside {media.fmt_t(lo)}-{media.fmt_t(hi)}; showing {media.fmt_t(t)}"
     return out
 
 
 def diff(watch: str, a, b) -> dict:
     d, m = load(watch)
-    ta, tb = media.parse_t(a), media.parse_t(b)
+    aa, ab = media.parse_t(a), media.parse_t(b)
+    lo = m["probe"].get("offset", 0.0)
+    hi = lo + m["probe"]["duration"] - 0.05
+    ta, tb = min(max(aa, lo), hi), min(max(ab, lo), hi)
     fa = media.grab_frame(m["file"], ta, max_edge=1000)
     fb = media.grab_frame(m["file"], tb, max_edge=1000)
     p = d / "diffs" / f"diff_{ta:.2f}_{tb:.2f}.jpg"
@@ -71,6 +82,9 @@ def diff(watch: str, a, b) -> dict:
         for k in ("x", "y", "w", "h"):
             r[k] = int(r[k] * scale)
     res["tokens"] = render.token_estimate(*res["size"])
+    res["times"] = [round(ta, 2), round(tb, 2)]
+    if abs(aa - ta) > 0.06 or abs(ab - tb) > 0.06:
+        res["note"] = f"asked for {_t(aa)} and {_t(ab)}; the video covers {media.fmt_t(lo)}-{media.fmt_t(hi)}, so this compares {media.fmt_t(ta)} and {media.fmt_t(tb)}"
     return res
 
 
@@ -105,6 +119,8 @@ def search_text(r: dict) -> str:
             L.append(f"  best frames: {v['sheet']['path']}")
         if v["moments"] and all(mo["match"] == "weak" for mo in v["moments"]):
             L.append("  all weak: probably not in the video")
+        if "negation" in v.get("note", ""):
+            L.append("  note: " + v["note"].split(". Search")[0] + ". Search for what IS there instead.")
     return "\n".join(L)
 
 
@@ -177,17 +193,19 @@ def capture_qa(source: str, start=None, end=None, fov_deg: float | None = None) 
     from . import qa
     from .watch import HOME, watch as run_watch
     p = Path(source).expanduser()
-    if media.is_url(source):
-        d = run_watch(source, start=start, end=end, transcribe="off", ocr=False)
-        f = json.loads((d / "watch.json").read_text())["file"]
-        out = d / "qa"
+    s = media.parse_t(start) if start not in (None, "") else None
+    e = media.parse_t(end) if end not in (None, "") else None
+    if media.is_url(source):   # download only (no full watch)
+        from .watch import download_dir
+        section = (s or 0.0, e if e is not None else 10 ** 7) if (s is not None or e is not None) else None
+        dl = download_dir(source, section)
+        f, _ = media.fetch(source, dl, section=section)
+        f, out = str(f), dl / "qa"
     elif p.exists() and p.is_file():
         f, out = str(p), HOME / "qa" / p.stem
     else:
         d, m = load(source)
         f, out = m["file"], d / "qa"
-    s = media.parse_t(start) if start not in (None, "") else None
-    e = media.parse_t(end) if end not in (None, "") else None
     r = qa.analyse(f, s, e, fov_deg, out_dir=out)
     r["summary"] = qa.summary_md(r)
     return r

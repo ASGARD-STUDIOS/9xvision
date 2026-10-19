@@ -3,7 +3,7 @@
 Video perception for AI agents. Give any agent (Claude Code, Codex, Cursor, anything that speaks MCP or can run a CLI) a video file or URL, and it gets back structured, timestamped evidence instead of a handful of random frames:
 
 - **Screen recordings** (apps, websites): every UI state in order, distinct views, the transition between each (tap, scroll, sheet, swipe), OCR of every screen, stitched full pages, and the flow.
-- **Everything else** (films, music videos, talks, demos): shots split at frame-accurate cuts *and* content beats (slide changes inside one take), camera motion, palettes, colour script, on-screen text and speech per segment, plus the music: tempo, beat grid, and whether the edit is cut to the beat.
+- **Everything else** (films, music videos, talks, demos): shots split at cuts placed on the exact frame *and* content beats (slide changes inside one take), camera motion, palettes, colour script, on-screen text and speech per segment, plus the music: tempo, beat grid, and whether the edit is cut to the beat.
 - **Visual search**: find moments by what is in the picture ("motorcycles with glowing wheels at night", "a pie chart"), not only by on-screen text or speech. Runs locally.
 - **Capture QA for games, XR and apps**: frame pacing and hitches with timestamps, stereo detection, fast camera turns (comfort), and flashes per second (photosensitivity triage).
 - **Drill-down tools**: `zoom` (dense frames of an interval), `frame` (full-res crop), `diff` (what changed between two moments), `search`, `qa`.
@@ -35,9 +35,11 @@ And the sound, for a music video:
 
 ```
 - music: ~128.5 BPM (pulse clarity 0.385); beat times in `sound.json`
-- edit vs music: partly on the beat: 44 of 109 cuts within ±63 ms of a beat (40%; chance would be 27%)
+- edit vs music: partly on the beat: 45 of 109 cuts within ±63 ms of a beat (41%; chance would be 27%, p=0.00074)
 - sudden rises (drops, hits, entries): 00:06.5 (+6 dB), 00:16.0 (+9.8 dB), 02:16.0 (+9.2 dB)
 ```
+
+The verdict needs at least 20 cuts and a binomial test against chance; with fewer it says "too few cuts to judge", and a weak pulse (speech, ambience) is flagged as a guess.
 
 **Visual search**, on the same music video:
 
@@ -49,7 +51,7 @@ visual moments: 02:11.5-02:12.0 weak 0.0001 · 01:45.0-01:45.5 weak 0.0001 · 00
   all weak: probably not in the video
 ```
 
-Scores are SigLIP's calibrated match strength, so "nothing matches" is a real answer instead of a confident wrong top hit. Every search also returns a contact sheet of its best frames to check.
+Scores are SigLIP's calibrated match strength (strong ≥ 0.5, possible ≥ 0.05), so "nothing matches" is a real answer instead of a confident wrong top hit. It is reliable for objects, people, clothing, places and colours, looser for actions ("jumping over a treadmill"), and it cannot do negation ("an empty room") — the tool warns when a query uses it. Every search also returns a contact sheet of its best frames to check.
 
 **Capture QA**, on 40 s of a Half-Life: Alyx playthrough from YouTube (only that window is downloaded):
 
@@ -62,7 +64,7 @@ $ 9xvision qa "https://www.youtube.com/watch?v=9M0_SWkRcMk" --start 1:00:00 --en
 - flashes: none above 3 per second
 ```
 
-A hitch is a frame the build failed to deliver while the picture kept moving: a repeated frame followed by a catch-up. A menu or a paused scene repeats frames too, so it does not count. Side-by-side and top-bottom stereo captures are detected and analysed on the left eye. Turn speed is image rotation: in a headset mirror capture it includes the player's own head turns, so it matters most for artificial turning, cutscenes and trailers. The flash check approximates WCAG 2.3.1 for triage. It is not a certified photosensitivity test.
+A hitch is a frame shown again while the picture is changing on both sides: the build missed a refresh. A still scene does not count, and a hold of 250 ms or more is reported separately as a freeze (a stall or a deliberate pause). A game capped below the capture rate (30 in 60) is reported as a cadence, and only holds beyond it count. On a 30 s Overwatch capture it reports exactly the three single-frame repeats found by hand. Side-by-side and top-bottom stereo captures are detected and analysed on the left eye. Turn speed is image rotation: in a headset mirror capture it includes the player's own head turns, so it matters most for artificial turning, cutscenes and trailers. The flash check approximates WCAG 2.3.1 for triage. It is not a certified photosensitivity test.
 
 ## Install
 
@@ -73,7 +75,7 @@ uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision
 
 `setup` plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. It also offers the optional pieces: on macOS it installs them with Homebrew (it asks first); on Linux it prints the commands. Those pieces are local speech-to-text (whisper.cpp plus a 466 MB model), tesseract for OCR where Apple Vision is missing, and the visual search model (SigLIP, 210 MB). Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it. Update later with `uv tool upgrade ninexvision`.
 
-Requires Python 3.12+ and ffmpeg. Tested on macOS (Apple Silicon), Ubuntu x86-64 and Linux ARM64.
+Requires Python 3.11+ and ffmpeg. Tested on macOS (Apple Silicon), Ubuntu x86-64 and Linux ARM64, Python 3.11 to 3.14.
 
 No `uv` yet? `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux). Manual routes: Claude Code `/plugin marketplace add ASGARD-STUDIOS/9xvision` then `/plugin install 9xvision@9x`; any MCP client: command `9xvision-mcp`. Any other agent with a shell: put `9xvision` on PATH and give it the text from `9xvision skill`.
 
@@ -125,8 +127,8 @@ The answer keys were corrected three times after inspecting failures; each time 
 One ffmpeg decode pass at 12 fps (6 fps over an hour) computes per-frame signals: HSV content change, changed-pixel fraction, phase-correlation shift, luma and sharpness. Status bars and home indicators are masked on phone recordings.
 
 - **Screen mode** finds stable UI states with an adaptive quiet threshold and keeps screens that never hold still as "moving" states. It clusters revisits into views on sharper 480 px frames, so toggles and checkmarks count. Transitions are classified by motion and change area, scroll groups are merged, and pages are stitched.
-- **Film mode** detects cuts with adaptive thresholds and fades, then re-decodes a short window around each at the native frame rate to place it on the exact frame. Content beats are added where the picture changes and holds without a cut. Keyframes are the sharpest frame in the middle of each shot.
-- **Sound**: spectral-flux onsets, tempo from autocorrelation, Ellis' dynamic-programming beat tracker (checked against librosa: 128.5 vs 129.2 BPM; beat times within 2 ms on a click track), RMS loudness.
+- **Film mode** detects cuts with adaptive thresholds and fades, then re-decodes a short window around each at the native frame rate to place it on the exact frame (102 of 103 cuts on a music video, checked against native frame differences; a dissolve or whip keeps its analysis time). Content beats are added where the picture changes and holds without a cut. Keyframes are the sharpest frame in the middle of each shot.
+- **Sound**: spectral-flux onsets, tempo from autocorrelation, Ellis' dynamic-programming beat tracker (beat times within 2 ms on a click track; an outside check found 87–99% of beats within 50 ms of librosa's on pop songs, and Rick Astley at 113.2 BPM vs the published 113), RMS loudness.
 - **Visual search**: SigLIP base (Google, Apache-2.0) on onnxruntime, CPU. Frames every 0.5–3 s plus every shot keyframe and screen, embedded once per watch.
 - **Capture QA**: every frame at its native rate, small and grey; repeated frames, phase-correlation catch-up, packet timestamps, luminance swings.
 - **Text**: Apple Vision OCR on macOS (in a watchdog process), tesseract elsewhere.
@@ -138,7 +140,8 @@ One ffmpeg decode pass at 12 fps (6 fps over an hour) computes per-frame signals
 - Scroll stitching is experimental and only runs when consecutive states share content.
 - Sound covers tempo, beats, loudness and speech. It does not describe instruments, mood or sound design.
 - OCR quality follows the source resolution; on 720p screen shares, small UI text needs `frame --crop`. Stylised titles are often missed.
-- Visual search is as good as SigLIP base: strong on objects, scenes, colours and actions, weak on counting, fine text and small details.
+- Visual search is as good as SigLIP base: strong on objects, scenes and colours; looser on actions; no negation, counting, fine text or small details.
+- Capture QA works from the video alone, so it sees what the viewer saw: a hitch hidden by the capture tool, or added by its encoder, is invisible or indistinguishable. Engine frame-time logs are the ground truth when you have them.
 
 ## License
 

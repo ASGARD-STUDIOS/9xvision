@@ -169,11 +169,14 @@ def refine_cuts(path, times: list[float], analysis_fps: float, video_fps: float)
     fps = min(max(video_fps, 1.0), 120.0)
 
     def one(t: float) -> float:
-        frames = list(stream_frames(path, fps, 96, pix="gray", start=max(0.0, t - 1.5 / analysis_fps), end=t + 0.5 / analysis_fps))
+        frames = list(stream_frames(path, fps, 96, pix="gray", start=max(0.0, t - 1.5 / analysis_fps), end=t + 1.5 / analysis_fps))
         if len(frames) < 3:
             return t
-        d = [float(cv2.absdiff(a[1], b[1]).mean()) for a, b in zip(frames, frames[1:])]
+        d = np.array([float(cv2.absdiff(a[1], b[1]).mean()) for a, b in zip(frames, frames[1:])])
         k = int(np.argmax(d))
+        rest = np.delete(d, k)
+        if len(rest) and d[k] < 2.5 * max(float(np.median(rest)), 0.5):
+            return t   # no clear single-frame change here (fast motion, dissolve): keep the analysis time
         return round(frames[k + 1][0], 3)
 
     with ThreadPoolExecutor(8) as ex:

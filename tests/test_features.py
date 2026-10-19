@@ -104,9 +104,12 @@ def test_tempo_and_beat_timing_on_a_click_track():
 
 def test_cut_alignment_verdict():
     beats = np.arange(0, 60, 0.5)
-    on = audio.align(list(beats[4:40:2] + 0.01), beats, 120, 24)
-    off = audio.align(list(beats[4:40:2] + 0.25), beats, 120, 24)
-    assert on["verdict"] == "cut to the beat" and off["verdict"] == "not cut to the beat"
+    on = audio.align(list(beats[4:64:2] + 0.01), beats, 120, 24)
+    off = audio.align(list(beats[4:64:2] + 0.25), beats, 120, 24)
+    few = audio.align(list(beats[4:16:2] + 0.01), beats, 120, 24)
+    assert on["verdict"] == "cut to the beat" and on["p_value"] < 0.001
+    assert off["verdict"] == "not cut to the beat"
+    assert few["verdict"].startswith("too few cuts")
 
 
 def _capture(path: Path, stereo=False, fps=60, seconds=8):
@@ -164,3 +167,55 @@ def test_visual_search_finds_the_colour(film_video, tmp_path, monkeypatch):
     m = json.loads((wd / "watch.json").read_text())
     top = semantic.search(wd, m, "a solid blue image", k=3)["moments"][0]
     assert 4.0 <= top["t"] <= 6.0        # shot 3 (4-6 s) is blue
+
+
+def _sprite_capture(path: Path, fps=60, seconds=6, cap=None):
+    """A character moving over a static background (most of the frame never changes). Holds at 2.0 s (1 missed
+    frame) and 4.0 s (2 missed). cap=30 renders at 30 fps inside the 60 fps capture (every frame shown twice)."""
+    W, H = 320, 180
+    from PIL import Image, ImageDraw
+    bg = Image.new("L", (W, H), 90)
+    ImageDraw.Draw(bg).rectangle([0, 140, W, H], fill=60)
+    held = {int(2.0 * fps): 1, int(4.0 * fps): 2}
+    frames, hold, last = [], 0, None
+    for i in range(fps * seconds):
+        k = i if not cap else (i // (fps // cap)) * (fps // cap)
+        im = bg.copy()
+        x = 20 + (k * 3) % (W - 60)
+        ImageDraw.Draw(im).ellipse([x, 90, x + 30, 140], fill=220)
+        img = np.asarray(im)
+        if hold > 0:
+            img, hold = last, hold - 1
+        if i in held:
+            hold = held[i] * (fps // cap if cap else 1)
+        frames.append(img)
+        last = img
+    p = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "gray", "-s", f"{W}x{H}", "-r", str(fps),
+                          "-i", "-", "-c:v", "libx264", "-crf", "14", "-pix_fmt", "yuv420p", str(path)], stdin=subprocess.PIPE)
+    for f in frames:
+        p.stdin.write(f.tobytes())
+    p.stdin.close()
+    p.wait()
+    return path
+
+
+def test_capture_qa_character_over_static_background(tmp_path):
+    r = qa.analyse(_sprite_capture(tmp_path / "sprite.mp4"))
+    assert [round(h["t"]) for h in r["pacing"]["hitches"]] == [2, 4], r["pacing"]["hitches"]
+
+
+def test_capture_qa_capped_frame_rate_is_a_cadence_not_hitches(tmp_path):
+    r = qa.analyse(_sprite_capture(tmp_path / "capped.mp4", cap=30))
+    assert r["pacing"]["cadence"] and r["pacing"]["effective_fps"]["median"] == pytest.approx(30, abs=2)
+    assert [round(h["t"]) for h in r["pacing"]["hitches"]] == [2, 4], r["pacing"]["hitches"]
+
+
+def test_clamped_times_say_so(film_video, tmp_path, monkeypatch):
+    monkeypatch.setenv("NINEXVISION_HOME", str(tmp_path))
+    wd = watch(str(film_video), mode="film", out=str(tmp_path / "w"), transcribe="off", ocr=False)
+    assert "note" in tools.zoom(str(wd), "90:00", "95:00", 4)
+    assert "note" in tools.diff(str(wd), "00:01", "99:00")
+    assert "-5 s" in tools.frame(str(wd), -5)["note"]
+    with pytest.raises(ValueError, match="can't read the time"):
+        tools.frame(str(wd), "abc")
+    assert "window" not in (wd / "INDEX.md").read_text()      # a full watch is not labelled partial

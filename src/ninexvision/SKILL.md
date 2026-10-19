@@ -15,7 +15,7 @@ You cannot take video input directly. 9xvision converts a video into things you 
    A short clip takes 20–40 s the first time; long videos about 1.5 s per minute (a 74-minute keynote: ~100 s). Give the command a timeout long enough to finish (e.g. 10 minutes) instead of abandoning it.
    **Long video, question about one stretch?** Add `--start 1:02:00 --end 1:05:00` (MCP: `start`, `end`). For a URL only that part is downloaded. Times stay in full-video time.
 2. **Read INDEX.md completely** before looking at any image. It already holds the structure, the text on screen, the speech and the sound, and those are usually where the answer is.
-3. **Search before scanning** when the question names a thing: `9xvision search "<words>"` (MCP: `search`). It returns on-screen text and speech hits across every watch, and visual moments in the watch: what is *in the picture* ("a red car at night", "someone hugging", "a pie chart"), with a contact sheet of the best frames. Visual scores: `strong` ≥ 0.10; when every moment is `weak`, the thing is probably not in the video. Say so instead of guessing.
+3. **Search before scanning** when the question names a thing: `9xvision search "<words>"` (MCP: `search`). It returns on-screen text and speech hits across every watch, and visual moments in the watch: what is *in the picture* ("a red car at night", "someone hugging", "a pie chart"), with a contact sheet of the best frames. Visual scores: `strong` ≥ 0.5, `possible` ≥ 0.05; when every moment is `weak`, the thing is probably not in the video. Say so instead of guessing. It is reliable for objects, people, clothing, places and colours, looser for actions, and it cannot do negation ("an empty room", "no people"): search for what IS there. Check the sheet before you report a hit.
 4. **Look at the overview sheets.** Each cell is one segment or view, labelled with its id and start time. For videos under ~10 minutes, view every sheet. For longer ones, view the colour script and the first sheet, then target.
 5. **Drill down only where the question needs it:**
    - `9xvision frame <watch> 01:23.4 --crop x,y,w,h`: full-resolution pixels, for small text, numbers, prices, UI copy. Crop takes pixels or 0-1 fractions.
@@ -29,7 +29,7 @@ You cannot take video input directly. 9xvision converts a video into things you 
 ## Game, VR/XR and app captures
 
 `9xvision qa <file|url|watch> [--start --end] [--fov DEG]` (MCP: `qa`) checks a playtest or capture:
-- **hitches**: frames the build failed to deliver while the picture moved (a repeated frame, then a catch-up), with times and milliseconds; effective fps per second. Menus and pauses are not counted.
+- **hitches**: a frame shown again while the picture changes on both sides (the build missed a refresh), with times and milliseconds; effective fps per second. Still scenes are not counted; holds of 250 ms or more are listed as **freezes** (a stall or a deliberate pause: look at them); a game capped below the capture rate is reported as a **cadence**, and only holds beyond it count.
 - **stereo**: side-by-side / top-bottom captures are detected and analysed on the left eye.
 - **comfort**: fast camera turns, in deg/s when you pass the headset's horizontal FOV. In a headset mirror capture this includes the player's own head turns; it matters for artificial turning, cutscenes and trailers.
 - **flashes**: more than 3 per second (WCAG 2.3.1 style triage, not a certified test).
@@ -41,7 +41,7 @@ It writes a chart; look at it, then `zoom` on the reported times to see each hit
 - OCR is Apple Vision (or Tesseract). It is very good, but it misreads stylised text, so check important strings against the frame.
 - In screen mode the flow names the text nearest each change: `local change at −'Work' · −'Self-Care'` means that area lost colour (often: deselected); `+'Female'` gained colour (often: selected). It is a pointer to where to look, not a verdict: confirm states with `diff` or `frame` before you report them.
 - In screen mode, "views" with the same text but a different look are real UI states (checked vs unchecked, selected vs not). Use `diff` on their times to see exactly what changed.
-- In film mode, "via cut" is an edit and "via beat" is a content change inside a shot. ♪ marks cuts within a frame or so of a musical beat. Rhythm stats (ASL, cuts per minute) count cuts only. The edit-vs-music verdict compares the on-beat share with what chance would give.
+- In film mode, "via cut" is an edit and "via beat" is a content change inside a shot. ♪ marks cuts within a frame or so of a musical beat. Rhythm stats (ASL, shots per minute) count cuts only. The edit-vs-music verdict is a binomial test against chance and needs 20+ cuts; "weak pulse" means the tempo is a guess.
 - Text that appears in most segments (logos, sidebars, sponsor bars) is listed once above the shots table.
 - If audio exists, `transcript.txt` has timestamped speech: captions when available, otherwise local whisper.cpp.
 

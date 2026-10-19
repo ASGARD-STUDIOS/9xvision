@@ -21,7 +21,8 @@ from . import media, render
 
 W = 160                 # analysis width (px)
 REPEAT = 0.25           # mean abs grey diff below this = the same frame shown again
-MOVING = 1.5            # mean abs diff across a held run above this = the picture kept moving (so the hold is a hitch)
+SIDE = 0.4              # the frames around a held run must change at least this much, and 4x the run's own noise
+CUT = 25.0              # a jump bigger than this and 3x the motion before it is a scene cut, not a catch-up
 FLASH = 0.1             # relative luminance swing that counts as a flash transition (WCAG: 10%)
 
 
@@ -113,32 +114,40 @@ def analyse(path, start: float | None = None, end: float | None = None, fov_deg:
         (dx, dy), r = cv2.phaseCorrelate(frames[a].astype(np.float32), frames[b].astype(np.float32), win)
         return float(np.hypot(dx, dy)), float(r)
 
-    # hitches: runs of repeated frames after which the motion catches up (the game missed refreshes).
-    # A pause (menu, cutscene hold) does not catch up, so it is not a hitch.
-    hitches = []
+    # Runs of exact repeats while the picture is changing on both sides. Short runs are hitches (the build
+    # missed refreshes); runs of 250 ms or more are freezes (a stall, or a deliberate pause: look at them).
+    runs = []
     i = 1
     while i < n:
         if repeat[i]:
             j = i
             while j + 1 < n and repeat[j + 1]:
                 j += 1
-            before, after = i - 1, j + 1
-            if after < n and before >= 1 and diff[before] > REPEAT:
-                held_n = after - before
-                d_across, r_across = shift(before, after)
-                d_step, r_step = shift(before - 1, before)
-                if r_across > 0.05 and r_step > 0.05 and d_step > 0.3:
-                    caught_up = d_across >= 1.6 * d_step and held_n >= 2
-                else:   # not a translation (animation, particles): fall back to how much the picture changed
-                    across = float(np.abs(f32[after] - f32[before]).mean())
-                    caught_up = diff[before] > MOVING and across >= 1.6 * diff[before]
-                if caught_up:
-                    held = float(t[after] - t[before])
-                    hitches.append({"t": round(float(t[i]), 3), "held_ms": round(held * 1000, 1),
-                                    "missed_frames": int(round(held / nominal)) - 1})
+            # real motion on both sides: not noise in a near-still shot, and not a scene cut
+            cut_after = j + 1 < n and diff[j + 1] > CUT and diff[j + 1] > 3 * diff[i - 1]
+            floor = max(SIDE, 4 * float(diff[i:j + 1].max()))   # a true repeat is near-exact; noise is not
+            if i - 1 >= 1 and j + 1 < n and diff[i - 1] > floor and diff[j + 1] > floor and not cut_after:
+                runs.append((i, j))
             i = j + 1
         else:
             i += 1
+    # A capped game inside a faster capture repeats on a pattern (30 in 60 = every other frame): that pattern
+    # is its frame rate, not a hitch. Only runs longer than the usual run count then.
+    lens = [j - i + 1 for i, j in runs]
+    share = sum(lens) / max(1, int((diff > REPEAT).sum()) + sum(lens))
+    cadence = int(np.median(lens)) if lens and share > 0.15 else 0
+    hitches, freezes = [], []
+    for (i, j), L in zip(runs, lens):
+        if L <= cadence:
+            continue
+        before, after = i - 1, j + 1
+        held = float(t[after] - t[before])
+        d_across, r_across = shift(before, after)
+        d_step, r_step = shift(before - 1, before) if before >= 1 else (0.0, 0.0)
+        caught_up = bool(r_across > 0.05 and r_step > 0.05 and d_step > 0.3 and d_across >= 1.5 * d_step)
+        item = {"t": round(float(t[i]), 3), "held_ms": round(held * 1000, 1), "missed_frames": L - cadence,
+                "motion_caught_up": caught_up}
+        (freezes if held >= 0.25 else hitches).append(item)
     gaps = [{"t": round(float(t[k]), 3), "gap_ms": round(float(dt[k]) * 1000, 1)}
             for k in np.where(dt > 1.5 * nominal)[0]]
 
@@ -152,8 +161,7 @@ def analyse(path, start: float | None = None, end: float | None = None, fov_deg:
         moving = (diff[idx] > REPEAT).mean() > 0.3
         if moving:
             span = (t[idx[-1]] - t[idx[0]]) + nominal
-            missed = sum(h["missed_frames"] for h in hitches if t[idx[0]] <= h["t"] <= t[idx[-1]])
-            eff.append([round(t0 + s, 1), round(max(0.0, (len(idx) - missed) / span), 1)])
+            eff.append([round(t0 + s, 1), round(float((~repeat[idx]).sum()) / span, 1)])   # distinct frames per second
 
     # comfort: horizontal turn speed from phase correlation between consecutive distinct frames
     speed = np.zeros(n)
@@ -206,7 +214,9 @@ def analyse(path, start: float | None = None, end: float | None = None, fov_deg:
         "capture_fps": round(fps, 2), "stereo": stereo or "mono",
         "pacing": {
             "repeated_frames_while_moving": int(sum(h["missed_frames"] for h in hitches)),
-            "hitches": hitches[:200], "hitch_count": len(hitches),
+            "hitches": hitches[:200], "hitch_count": len(hitches), "freezes": freezes[:50],
+            "cadence": (f"the picture updates every {cadence + 1} capture frames (~{fps / (cadence + 1):.0f} fps): "
+                        "a frame-rate cap or mismatch; hitches are counted beyond that") if cadence else None,
             "worst_hitch_ms": max((h["held_ms"] for h in hitches), default=0.0),
             "timestamp_gaps": gaps[:100],
             "effective_fps": {"median": round(float(np.median(effs)), 1), "p5": round(float(np.percentile(effs, 5)), 1),
@@ -274,6 +284,11 @@ def summary_md(r: dict) -> str:
              else "- effective fps: the picture never moved enough to measure")
     L.append(f"- hitches: {p['hitch_count']} (repeated frames while the picture moved), worst {p['worst_hitch_ms']} ms"
              + ("; at " + ", ".join(f"{media.fmt_t(h['t'])} ({h['held_ms']:g} ms)" for h in sorted(p["hitches"], key=lambda h: -h["held_ms"])[:8]) if p["hitches"] else ""))
+    if p.get("cadence"):
+        L.append(f"- cadence: {p['cadence']}")
+    if p.get("freezes"):
+        L.append(f"- freezes (held 250 ms or more while the picture changed around them: a stall or a deliberate pause): "
+                 + ", ".join(f"{media.fmt_t(h['t'])} ({h['held_ms']:g} ms)" for h in p["freezes"][:8]))
     if p["timestamp_gaps"]:
         L.append(f"- timestamp gaps (variable-rate capture): {len(p['timestamp_gaps'])}; " +
                  ", ".join(f"{media.fmt_t(g['t'])} ({g['gap_ms']:g} ms)" for g in p["timestamp_gaps"][:6]))

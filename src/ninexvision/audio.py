@@ -114,7 +114,11 @@ def analyse(path, start: float, end: float, cuts: list[float] | None = None, vid
     env = onset_envelope(y)
     bpm, clarity = tempo(env)
     rhythmic = clarity >= 0.25 and bpm > 0
-    out: dict = {"present": True, "bpm": bpm if rhythmic else None, "pulse_clarity": clarity}
+    if rhythmic and clarity < 0.35:
+        out_weak = True
+    else:
+        out_weak = False
+    out: dict = {"present": True, "bpm": bpm if rhythmic else None, "pulse_clarity": clarity, "weak_pulse": out_weak}
     lv = loudness(y)
     if len(lv):
         out["level_dbfs"] = {"mean": round(float(np.mean(lv)), 1), "max": round(float(np.max(lv)), 1)}
@@ -138,13 +142,29 @@ def align(cuts: list[float], bt: np.ndarray, bpm: float, video_fps: float) -> di
         return {}
     on = [d for d in near if abs(d) <= tol]
     chance = min(1.0, 2 * tol / period)
+    p = _binom_tail(len(on), len(near), chance)
     res = {"cuts": len(near), "on_beat": len(on), "share": round(len(on) / len(near), 2),
-           "chance": round(chance, 2), "tolerance_s": round(tol, 3)}
+           "chance": round(chance, 2), "tolerance_s": round(tol, 3), "p_value": float(f"{p:.2g}")}
     if len(on) >= 3:
         res["median_offset_frames"] = round(float(np.median(on)) * video_fps, 1)
-    res["verdict"] = ("cut to the beat" if res["share"] >= max(0.35, 2 * chance)
-                      else "partly on the beat" if res["share"] >= 1.4 * chance else "not cut to the beat")
+    if len(near) < MIN_CUTS:
+        res["verdict"] = f"too few cuts to judge ({len(near)}; needs {MIN_CUTS})"
+    elif p < 0.001 and res["share"] >= 2 * chance:
+        res["verdict"] = "cut to the beat"
+    elif p < 0.01:
+        res["verdict"] = "partly on the beat"
+    else:
+        res["verdict"] = "not cut to the beat"
     return res
+
+
+MIN_CUTS = 20
+
+
+def _binom_tail(k: int, n: int, p: float) -> float:
+    """P(X >= k) for X ~ Binomial(n, p): how likely this many on-beat cuts are by chance."""
+    from math import comb
+    return float(min(1.0, sum(comb(n, i) * p ** i * (1 - p) ** (n - i) for i in range(k, n + 1))))
 
 
 def _jumps(lv: np.ndarray, start: float, k: int = 4) -> list[dict]:

@@ -90,7 +90,8 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
         raise ValueError(f"the window {media.fmt_t(t0)}-{media.fmt_t(t1)} is empty; the video covers "
                          f"{media.fmt_t(pr.offset)}-{media.fmt_t(pr.end)}")
     windowed = t0 > pr.offset + 0.05 or t1 < pr.end - 0.05
-    full = float(info.get("duration") or 0) or pr.end
+    full = max(float(info.get("duration") or 0), pr.end)
+    asked_window = (w_start is not None or w_end is not None) and (t0 > 0.5 or t1 < full - 1.0)
     title = info.get("title") or (given.stem if given and pr.title == path.stem else pr.title)
     if ";" in title and len(set(title.split(";"))) == 1:   # some muxers repeat the title per stream
         title = title.split(";")[0]
@@ -119,6 +120,7 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
         "version": __version__, "id": wdir.name, "dir": str(wdir), "source": source, "file": str(path),
         "title": title, "mode": chosen, "probe": pr.to_dict(), "info": info,
         "window": [round(t0, 2), round(t1, 2)], "full_duration": round(full, 2), "settings": settings,
+        "partial": bool(asked_window),
         "analysis": {"fps": sig.fps, "width": sig.width, "mask_top": sig.mask_top, "mask_bottom": sig.mask_bottom},
     }
 
@@ -375,7 +377,7 @@ def index_md(m: dict) -> str:
     w0, w1 = m.get("window") or (0.0, pr["duration"])
     full = m.get("full_duration") or pr["duration"]
     L.append(f"- {pr['width']}x{pr['height']}, {media.fmt_t(full)} ({full:.1f}s), {pr['fps']} fps, mode **{m['mode']}**")
-    if w0 > 0.05 or w1 < full - 0.05:
+    if m.get("partial", w0 > 0.5 or w1 < full - 1.0):
         L.append(f"- **window: {media.fmt_t(w0)}-{media.fmt_t(w1)} only** (all times are from the start of the full video)")
     au = m.get("audio", {})
     L.append(f"- audio: {'yes' if au.get('present') else 'no'}" + (f", transcript: {au.get('transcript')}" if au.get("transcript") else ""))
@@ -461,19 +463,21 @@ def index_md(m: dict) -> str:
         L.append(f"## Summary: {r.get('shots')} camera shots, average shot {r.get('asl')}s (median {r.get('median_shot')}s, longest {r.get('longest')}s)")
         if r.get("content_beats"):
             L.append(f"plus {r['content_beats']} content beats (the picture changed and held inside a shot: slides, pages, scene changes in one take). Segments below = shots + beats.")
-        L.append(f"cuts per minute: {r.get('cuts_per_minute')}")
+        cpm = r.get("cuts_per_minute") or []
+        L.append("shots starting in each minute: " + ", ".join(str(c) for c in cpm[:40]) + (" ..." if len(cpm) > 40 else ""))
         L.append("")
         snd = m.get("sound")
         if snd:
             L.append("## Sound")
             if snd.get("bpm"):
-                L.append(f"- music: ~{snd['bpm']:g} BPM (pulse clarity {snd['pulse_clarity']}); beat times in `sound.json`")
+                L.append(f"- music: ~{snd['bpm']:g} BPM (pulse clarity {snd['pulse_clarity']}"
+                         + ("; weak pulse, so treat the tempo as a guess" if snd.get("weak_pulse") else "") + "); beat times in `sound.json`")
                 cb = snd.get("cuts_vs_beats") or {}
                 if cb:
                     off = f"; median offset {cb['median_offset_frames']:+g} frames" if "median_offset_frames" in cb else ""
                     L.append(f"- edit vs music: **{cb['verdict']}**: {cb['on_beat']} of {cb['cuts']} cuts within "
-                             f"±{cb['tolerance_s'] * 1000:.0f} ms of a beat ({cb['share']:.0%}; chance would be {cb['chance']:.0%}){off}. "
-                             "♪ in the table marks cuts on the beat.")
+                             f"±{cb['tolerance_s'] * 1000:.0f} ms of a beat ({cb['share']:.0%}; chance would be {cb['chance']:.0%}, "
+                             f"p={cb.get('p_value')}){off}. ♪ in the table marks cuts on the beat.")
             else:
                 L.append(f"- no steady beat (pulse clarity {snd['pulse_clarity']}): speech, ambience or free-time music")
             if snd.get("level_dbfs"):

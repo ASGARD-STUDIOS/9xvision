@@ -306,10 +306,12 @@ def parse_t(value: str | float | int) -> float:
     if isinstance(value, (int, float)):
         return float(value)
     v = value.strip()
-    if ":" in v:
-        parts = [float(p) for p in v.split(":")]
-        total = 0.0
-        for p in parts:
-            total = total * 60 + p
-        return total
-    return float(v.rstrip("s"))
+    try:
+        if ":" in v:
+            total = 0.0
+            for p in v.split(":"):
+                total = total * 60 + float(p)
+            return total
+        return float(v.rstrip("s"))
+    except ValueError:
+        raise ValueError(f"can't read the time {value!r}: use mm:ss.s, h:mm:ss or seconds (e.g. 01:23.5, 1:02:00, 83.5)") from None
