@@ -4,10 +4,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import functools
+
 try:  # mcp >= 2
     from mcp.server.mcpserver import Image, MCPServer as _Server
+    from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as _Server, Image
+    from mcp.server.fastmcp.exceptions import ToolError
 
 from . import tools
 from .watch import watch as run_watch
@@ -22,7 +26,21 @@ def _img(path: str) -> Image:
     return Image(path=path)
 
 
+def _explained(fn):
+    """mcp 2.x hides unexpected exceptions behind 'Error executing tool'; pass the reason to the agent."""
+    @functools.wraps(fn)
+    def wrapper(*a, **kw):
+        try:
+            return fn(*a, **kw)
+        except ToolError:
+            raise
+        except Exception as e:
+            raise ToolError(f"{type(e).__name__}: {e}") from e
+    return wrapper
+
+
 @mcp.tool()
+@_explained
 def watch(source: str, mode: str = "auto", force: bool = False) -> list:
     """Analyse a local video file or URL (YouTube, Vimeo, TikTok, X...). mode: auto | film | screen
     (screen = app/screen recordings). Returns INDEX.md plus the first overview contact sheet."""
@@ -35,6 +53,7 @@ def watch(source: str, mode: str = "auto", force: bool = False) -> list:
 
 
 @mcp.tool()
+@_explained
 def look(watch_id: str, what: str) -> list:
     """Show an artefact of a watch: sheet:N, timeline:N, view:N (full-res screen), shot:N (keyframe),
     page:N (stitched long page), colour (colour script)."""
@@ -43,6 +62,7 @@ def look(watch_id: str, what: str) -> list:
 
 
 @mcp.tool()
+@_explained
 def zoom(watch_id: str, start: str, end: str, n: int = 12) -> list:
     """Dense timestamped grid of frames between start and end (mm:ss.s or seconds), up to 30 frames."""
     r = tools.zoom(watch_id, start, end, n)
@@ -50,6 +70,7 @@ def zoom(watch_id: str, start: str, end: str, n: int = 12) -> list:
 
 
 @mcp.tool()
+@_explained
 def frame(watch_id: str, at: str, crop: str | None = None) -> list:
     """Full-resolution frame at a time. crop = "x,y,w,h" in pixels or 0-1 fractions, for reading small detail."""
     r = tools.frame(watch_id, at, crop)
@@ -57,6 +78,7 @@ def frame(watch_id: str, at: str, crop: str | None = None) -> list:
 
 
 @mcp.tool()
+@_explained
 def diff(watch_id: str, a: str, b: str) -> list:
     """Compare two moments: side-by-side plus highlighted changed regions (pixel boxes in source coordinates)."""
     r = tools.diff(watch_id, a, b)
@@ -64,12 +86,14 @@ def diff(watch_id: str, a: str, b: str) -> list:
 
 
 @mcp.tool()
+@_explained
 def search(query: str, watch_id: str | None = None) -> str:
     """Find on-screen text (OCR) and spoken words across watched videos, with timestamps."""
     return json.dumps(tools.search(query, watch_id), indent=1, ensure_ascii=False)
 
 
 @mcp.tool()
+@_explained
 def list_watches() -> str:
     """Previously watched videos (cached; re-watching is instant)."""
     return json.dumps(tools.list_watches(), indent=1, ensure_ascii=False)
