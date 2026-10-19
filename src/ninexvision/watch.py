@@ -53,12 +53,14 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
         dl = HOME / "downloads" / _slug(re.sub(r"^https?://(www\.)?", "", source))
         log(f"fetching {source}")
         path, info = media.fetch(source, dl)
-    else:
-        path = Path(source).expanduser().resolve()
+    given = None
+    if not media.is_url(source):
+        given = Path(source).expanduser().absolute()
+        path = given.resolve()
         if not path.exists():
             raise FileNotFoundError(path)
     pr = media.probe(path)
-    title = info.get("title") or pr.title
+    title = info.get("title") or (given.stem if given and pr.title == path.stem else pr.title)
     wid = f"{_slug(title)}-{media.file_fingerprint(path)}"
     wdir = Path(out).expanduser() if out else watches_root() / wid
     meta_path = wdir / "watch.json"
@@ -88,7 +90,11 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
     meta["audio"] = {"present": pr.has_audio}
     if pr.has_audio and transcribe != "off":
         # captions: yt-dlp's for URLs, or a sidecar <name>*.vtt next to a local file
-        vtts = sorted(path.parent.glob("source*.vtt")) if info else sorted(path.parent.glob(f"{glob_escape(path.stem)}*.vtt"))
+        if info:
+            vtts = sorted(path.parent.glob("source*.vtt"))
+        else:   # next to the path as given (it may be a symlink) or next to the real file
+            vtts = sorted(given.parent.glob(f"{glob_escape(given.stem)}*.vtt")) or \
+                   sorted(path.parent.glob(f"{glob_escape(path.stem)}*.vtt"))
         level = media.audio_level(path)
         meta["audio"]["mean_db"] = level
         if vtts:
@@ -152,7 +158,14 @@ def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
 
 def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
     states = screen.find_states(sig)
-    screen.cluster_views(sig, states)
+    import cv2
+    y0, y1 = int(pr.height * sig.mask_top), pr.height - int(pr.height * sig.mask_bottom)
+    sharp = []
+    for s in states:
+        g = cv2.cvtColor(media.grab_frame(path, float(sig.t[s["rep"]]), max_edge=480), cv2.COLOR_RGB2GRAY)
+        h = g.shape[0]
+        sharp.append(g[int(h * y0 / pr.height):int(h * y1 / pr.height)])
+    screen.cluster_views(sig, states, sharp)
     transitions = [screen.classify_transition(sig, a, b) for a, b in zip(states, states[1:])]
     page_of = screen.group_pages(states, transitions)
     log(f"{len(states)} states, {len({s['view'] for s in states})} views")
@@ -193,6 +206,17 @@ def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
             # thumbs cover the masked band only -> map back to full-frame pixels
             band = 1 - sig.mask_top - sig.mask_bottom
             tr["region_px"] = [int(x * sx), int((sig.mask_top + y * band) * sy), int(w * sx), int(h * band * sy)]
+        if do_ocr and (tr["type"] in ("local change", "content change") or tr["type"].startswith("partial")):
+            # name what changed: the text in the same row as each changed blob (a toggled option, a picker value)
+            band = 1 - sig.mask_top - sig.mask_bottom
+            lines = views[states[k]["view"]].get("text", []) + views[states[k + 1]["view"]].get("text", [])
+            at: list[str] = []
+            for bx, by, bw, bh in screen.change_blobs(sharp[k], sharp[k + 1]):
+                for lab in screen.labels_at([bx, sig.mask_top + by * band, bw, bh * band], lines):
+                    if lab not in at:
+                        at.append(lab)
+            if at:
+                tr["at"] = at[:6]
     meta["states"] = out_states
     meta["transitions"] = transitions
     meta["views"] = [views[v] for v in sorted(views)]
@@ -238,7 +262,7 @@ def _flow(states: list[dict], transitions: list[dict]) -> list[str]:
         if tr["type"] in ("scroll", "swipe", "slide"):
             extra = f" {tr['direction']} {tr['distance_screens']}x"
         elif tr.get("region_px"):
-            extra = f" region={tr['region_px']}"
+            extra = (" at " + " · ".join(f"'{t}'" for t in tr["at"]) if tr.get("at") else "") + f" region={tr['region_px']}"
         lines.append(f"{media.fmt_t(tr['from_t'])}  V{a['view']} -> V{b['view']}  [{tr['type']}{extra}]")
     return lines
 

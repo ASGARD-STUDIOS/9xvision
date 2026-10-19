@@ -8,6 +8,7 @@ from .signal import Signal
 
 MIN_STATE = 0.3          # seconds a UI must hold still to count as a state
 SAME_VIEW = 0.006        # fraction of changed thumb pixels under which two states are the same view
+SAME_VIEW_SHARP = 0.0015 # same, measured on 480 px reps
 MOTION_GAP = 0.8         # a moving stretch longer than this (s) becomes a "moving" state of its own
 MOTION_STEP = 2.0        # long moving stretches get one representative frame per this many seconds
 
@@ -40,7 +41,7 @@ def find_states(sig: Signal) -> list[dict]:
     # merge neighbours that are visually identical (a flicker between them)
     merged: list[dict] = []
     for s in states:
-        if merged and _thumb_diff(sig.thumbs[merged[-1]["rep"]], sig.thumbs[s["rep"]]) < 0.004:
+        if merged and _thumb_diff(sig.thumbs[merged[-1]["rep"]], sig.thumbs[s["rep"]]) < 0.0008:
             merged[-1]["b"] = s["b"]
             merged[-1]["rep"] = merged[-1]["a"] + int(round(0.8 * (s["b"] - merged[-1]["a"])))
         else:
@@ -140,17 +141,50 @@ def classify_transition(sig: Signal, s0: dict, s1: dict) -> dict:
     return out
 
 
-def cluster_views(sig: Signal, states: list[dict]) -> None:
-    """Give every state a view id; revisits of an identical screen share one."""
+def change_blobs(a: np.ndarray, b: np.ndarray, max_blobs: int = 4) -> list[list[float]]:
+    """Separate changed regions between two grayscale frames, largest first, as normalised x, y, w, h."""
+    if a.shape != b.shape:
+        b = cv2.resize(b, (a.shape[1], a.shape[0]))
+    d = (cv2.absdiff(a, b) > 20).astype(np.uint8)
+    d = cv2.dilate(d, np.ones((5, 5), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(d)
+    H, W = d.shape
+    blobs = [st for st in stats[1:] if st[4] >= 0.0005 * H * W]
+    blobs.sort(key=lambda st: -st[4])
+    return [[st[0] / W, st[1] / H, st[2] / W, st[3] / H] for st in blobs[:max_blobs]]
+
+
+def labels_at(box: list[float], lines: list[dict], k: int = 2) -> list[str]:
+    """On-screen text in the same row as a changed box (a checkbox's label, a tapped option, a picker value)."""
+    x, y, w, h = box
+    scored = []
+    for ln in lines:
+        lx, ly, lw, lh = ln["box"]
+        overlap = min(y + h, ly + lh) - max(y, ly)
+        if overlap < 0.3 * min(h, lh) or ln.get("conf", 1) < 0.4 or len(ln["text"].strip()) < 2:
+            continue
+        gap = max(0.0, max(x, lx) - min(x + w, lx + lw))
+        scored.append((gap, -overlap, ln["text"].strip()))
+    scored.sort()
+    out = []
+    for _, _, t in scored:
+        if t not in out:
+            out.append(t)
+    return out[:k]
+
+
+def cluster_views(sig: Signal, states: list[dict], imgs: list[np.ndarray] | None = None) -> None:
+    """Give every state a view id; revisits of an identical screen share one.
+    imgs: sharper grayscale reps (one per state) so small controls (toggles, checkmarks) count."""
     reps: list[tuple[int, np.ndarray]] = []
-    for s in states:
-        th = sig.thumbs[s["rep"]]
+    for k, s in enumerate(states):
+        th = imgs[k] if imgs is not None else sig.thumbs[s["rep"]]
         best, best_d = None, 1.0
         for vid, rth in reps:
             d = _thumb_diff(rth, th)
             if d < best_d:
                 best, best_d = vid, d
-        if best is not None and best_d < SAME_VIEW:
+        if best is not None and best_d < (SAME_VIEW_SHARP if imgs is not None else SAME_VIEW):
             s["view"] = best
         else:
             s["view"] = len(reps) + 1

@@ -56,11 +56,57 @@ def ocr_backend() -> str | None:
     return None
 
 
+OCR_TIMEOUT = 30.0   # seconds per image before the worker is killed and tesseract takes over
+
+
+class _OcrWorker:
+    """Apple Vision in a child process: it can deadlock on long batches, and a hang must never stall a watch."""
+
+    def __init__(self) -> None:
+        self.p = subprocess.Popen([sys.executable, "-m", "ninexvision._ocr_worker"],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def run(self, rgb: np.ndarray, timeout: float) -> list[dict]:
+        import select
+        ok, png = cv2.imencode(".png", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+        data = png.tobytes()
+        self.p.stdin.write(len(data).to_bytes(4, "big") + data)
+        self.p.stdin.flush()
+        ready, _, _ = select.select([self.p.stdout], [], [], timeout)
+        if not ready:
+            raise TimeoutError
+        line = self.p.stdout.readline()
+        if not line:
+            raise RuntimeError("ocr worker exited")
+        return json.loads(line)
+
+    def kill(self) -> None:
+        self.p.kill()
+
+
+_worker: _OcrWorker | None = None
+
+
 def ocr(rgb: np.ndarray) -> list[dict]:
     """Text lines with normalised boxes (x, y, w, h from top-left), top-to-bottom."""
+    global _worker
     backend = ocr_backend()
+    if backend == "apple-vision":
+        try:
+            if _worker is None:
+                _worker = _OcrWorker()
+            return _worker.run(rgb, OCR_TIMEOUT)
+        except Exception:
+            if _worker is not None:
+                _worker.kill()
+                _worker = None
+            backend = "tesseract" if shutil.which("tesseract") else None
     if backend is None:
         return []
+    return _ocr_direct(rgb, backend)
+
+
+def _ocr_direct(rgb: np.ndarray, backend: str) -> list[dict]:
     from PIL import Image
     im = Image.fromarray(rgb)
     lines: list[dict] = []
