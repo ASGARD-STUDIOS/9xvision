@@ -1,38 +1,53 @@
 ---
 name: 9xvision
-description: Use whenever a task involves a video - a local file, a URL (YouTube, Vimeo, TikTok, X, Instagram), a screen recording of an app or website, a talk, a music video, or footage to edit. Turns the video into structured, timestamped evidence (scenes or UI states, contact sheets, OCR text, transcript, flow) so you can answer precisely and cite times instead of guessing from a few frames.
+description: Use whenever a task involves a video - a local file, a URL (YouTube, Vimeo, TikTok, X, Instagram), a screen recording of an app or website, a game or VR/XR capture, a talk, a music video, or footage to edit. Turns the video into structured, timestamped evidence (scenes or UI states, contact sheets, OCR text, transcript, flow, beats, visual search, capture QA) so you can answer precisely and cite times instead of guessing from a few frames.
 ---
 
 # 9xvision: watch video properly
 
-You cannot take video input directly. 9xvision converts a video into things you can read: a written index, labelled contact sheets, full-resolution frames, OCR text and a transcript. Everything carries mm:ss.s timestamps.
+You cannot take video input directly. 9xvision converts a video into things you can read: a written index, labelled contact sheets, full-resolution frames, OCR text, a transcript and sound analysis. Everything carries mm:ss.s timestamps in full-video time.
 
 ## Protocol (coarse to fine)
 
 1. **Watch once.** `9xvision watch <file-or-url>` (MCP: `watch`). It prints `INDEX.md` and caches everything, so a second call is instant. Mode is picked automatically:
    - **screen**: app or website recordings. You get distinct views (V#), every UI state in order (S#), a transition-by-transition flow, OCR of every view, and stitched full pages where the user scrolled.
-   - **film**: everything else. You get shots split at camera cuts *and* at content beats (slide changes, new pages in a screen share, scene changes inside one take), plus camera motion, palettes, a colour script, on-screen text and speech per segment.
-   Processing takes about 1–2 s per minute of video (a 74-minute keynote: ~100 s), once. Give the command a timeout long enough to finish (e.g. 10 minutes) instead of abandoning it; everything after is instant.
-2. **Read INDEX.md completely** before looking at any image. It already holds the structure, the text on screen and the speech, and those are usually where the answer is. For a long video with a specific question (a name, a number, a slide), `9xvision search "<word>"` first: it searches every OCR'd frame and the transcript, and returns times and keyframes to open.
-3. **Look at the overview sheets.** Each cell is one segment or view, labelled with its id and start time. For videos under ~10 minutes, view every sheet. For longer ones, view the colour script and the first sheet, then target.
-4. **Drill down only where the question needs it:**
+   - **film**: everything else. You get shots split at frame-accurate cuts *and* content beats (slide changes, new pages in a screen share, scene changes inside one take), camera motion, palettes, a colour script, on-screen text and speech per segment, and a Sound section (tempo, whether the edit is cut to the beat, loudness jumps, silences).
+   A short clip takes 20–40 s the first time; long videos about 1.5 s per minute (a 74-minute keynote: ~100 s). Give the command a timeout long enough to finish (e.g. 10 minutes) instead of abandoning it.
+   **Long video, question about one stretch?** Add `--start 1:02:00 --end 1:05:00` (MCP: `start`, `end`). For a URL only that part is downloaded. Times stay in full-video time.
+2. **Read INDEX.md completely** before looking at any image. It already holds the structure, the text on screen, the speech and the sound, and those are usually where the answer is.
+3. **Search before scanning** when the question names a thing: `9xvision search "<words>"` (MCP: `search`). It returns on-screen text and speech hits across every watch, and visual moments in the watch: what is *in the picture* ("a red car at night", "someone hugging", "a pie chart"), with a contact sheet of the best frames. Visual scores: `strong` ≥ 0.10; when every moment is `weak`, the thing is probably not in the video. Say so instead of guessing.
+4. **Look at the overview sheets.** Each cell is one segment or view, labelled with its id and start time. For videos under ~10 minutes, view every sheet. For longer ones, view the colour script and the first sheet, then target.
+5. **Drill down only where the question needs it:**
    - `9xvision frame <watch> 01:23.4 --crop x,y,w,h`: full-resolution pixels, for small text, numbers, prices, UI copy. Crop takes pixels or 0-1 fractions.
    - `9xvision zoom <watch> 01:20 01:30 -n 16`: a dense timestamped grid of an interval. Use it for anything fast (a 0.5 s insert shot, a toggle, a tap), or to check what happens *between* two segments.
    - `9xvision diff <watch> 00:17.0 00:18.3`: what changed between two moments, with highlighted boxes. Use it for UI state changes (a checkbox, a selection, a value).
-   - `9xvision search "<text>"`: find on-screen text or spoken words across everything watched, with times.
    - `9xvision look <watch> view:12 | shot:40 | page:3 | sheet:2 | colour`: path of any artefact.
-5. **Answer with timestamps.** Say what you saw and when ("at 01:35.3 a green-lit reclining Buddha, about 0.5 s"). If something is ambiguous, zoom before you answer. Don't guess.
+6. **Answer with timestamps.** Say what you saw and when ("at 01:35.3 a green-lit reclining Buddha, about 0.5 s"). If something is ambiguous, zoom before you answer. Don't guess.
 
 `<watch>` is the watch id or directory printed at the top of INDEX.md.
+
+## Game, VR/XR and app captures
+
+`9xvision qa <file|url|watch> [--start --end] [--fov DEG]` (MCP: `qa`) checks a playtest or capture:
+- **hitches**: frames the build failed to deliver while the picture moved (a repeated frame, then a catch-up), with times and milliseconds; effective fps per second. Menus and pauses are not counted.
+- **stereo**: side-by-side / top-bottom captures are detected and analysed on the left eye.
+- **comfort**: fast camera turns, in deg/s when you pass the headset's horizontal FOV. In a headset mirror capture this includes the player's own head turns; it matters for artificial turning, cutscenes and trailers.
+- **flashes**: more than 3 per second (WCAG 2.3.1 style triage, not a certified test).
+It writes a chart; look at it, then `zoom` on the reported times to see each hitch.
 
 ## Reading the outputs
 
 - `~` after a view id means it was captured while the screen was moving (carousel, video, animation). Zoom there if it matters.
-- OCR is Apple Vision (or Tesseract). It is very good, but it can misspell stylised text, so check important strings against the frame.
-- In screen mode the flow names what changed: `local change at −'Work' · −'Self-Care'` means those options lost colour (deselected); `+'Female'` gained colour (selected). It is a colour heuristic, so confirm important states with `diff` or `frame`.
+- OCR is Apple Vision (or Tesseract). It is very good, but it misreads stylised text, so check important strings against the frame.
+- In screen mode the flow names the text nearest each change: `local change at −'Work' · −'Self-Care'` means that area lost colour (often: deselected); `+'Female'` gained colour (often: selected). It is a pointer to where to look, not a verdict: confirm states with `diff` or `frame` before you report them.
 - In screen mode, "views" with the same text but a different look are real UI states (checked vs unchecked, selected vs not). Use `diff` on their times to see exactly what changed.
-- In film mode, "via cut" is an edit and "via beat" is a content change inside a shot. Rhythm stats (ASL, cuts per minute) count cuts only.
+- In film mode, "via cut" is an edit and "via beat" is a content change inside a shot. ♪ marks cuts within a frame or so of a musical beat. Rhythm stats (ASL, cuts per minute) count cuts only. The edit-vs-music verdict compares the on-beat share with what chance would give.
+- Text that appears in most segments (logos, sidebars, sponsor bars) is listed once above the shots table.
 - If audio exists, `transcript.txt` has timestamped speech: captions when available, otherwise local whisper.cpp.
+
+## URLs
+
+yt-dlp handles YouTube, Vimeo, TikTok, X, Instagram and ~1,800 other sites. A playlist URL is refused with its video URLs: pick one. A live stream needs start/end. When a fetch fails, the error ends with "Next step": follow it. If the site wants a login, ask the user before retrying with `--cookies-from-browser chrome` (MCP: `cookies_from_browser`), which reads that browser's cookies on this machine.
 
 ## Recipes
 
@@ -44,11 +59,14 @@ You cannot take video input directly. 9xvision converts a video into things you 
 5. Note monetisation (paywalls, prices, ads), permission prompts and rewards with their timestamps.
 
 **Edit / cinematography breakdown**
-Use the shots table for rhythm (ASL, cuts per minute by minute), motion classes, the colour script for the grade arc, and the sheets for composition, locations, wardrobe and recurring motifs. Zoom on very short shots, which are often the inserts that carry meaning.
+Use the shots table for rhythm (ASL, cuts per minute by minute), motion classes, the Sound section for tempo and cut-to-beat, the colour script for the grade arc, and the sheets for composition, locations, wardrobe and recurring motifs. Zoom on very short shots, which are often the inserts that carry meaning.
 
 **Talk, tutorial or demo → notes**
 Use the beats as the slide and section index. Pair each beat's on-screen text with the speech in the same row, and grab full frames of the slides that matter.
 
+**Playtest → bug list**
+Run `qa`, then `watch` the same capture. For each hitch and flash window, `zoom` on its time to see what was on screen (a spawn, a level load, an effect), and report it with the time and duration.
+
 ## Install (if `9xvision` is not on PATH)
 
-`uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision` (or `uv tool install <local checkout>`). Requires `ffmpeg`. Optional: `whisper-cpp` with a ggml model for local transcripts. OCR uses Apple Vision on macOS and `tesseract` elsewhere.
+`uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision` then `9xvision setup`. Requires `ffmpeg`. Optional (setup offers them): `whisper-cpp` with a ggml model for local transcripts, the SigLIP model for visual search, and `tesseract` for OCR where Apple Vision is missing.

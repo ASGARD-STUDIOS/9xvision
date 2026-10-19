@@ -91,13 +91,15 @@ def contact_sheet(frames: list[np.ndarray], labels: list[str], path: Path, max_e
     return save_jpg(sheet, path, max_edge=max_edge)
 
 
-def colour_script(shots: list[dict], duration: float, path: Path, width: int = MAX_EDGE, height: int = 160) -> tuple[int, int]:
-    """One band per shot, width proportional to duration, stacked palette swatches."""
+def colour_script(shots: list[dict], duration: float, path: Path, width: int = MAX_EDGE, height: int = 160,
+                  start: float = 0.0) -> tuple[int, int]:
+    """One band per shot, width proportional to duration, stacked palette swatches. start..duration = the span shown."""
     im = Image.new("RGB", (width, height + 26), (16, 16, 16))
     d = ImageDraw.Draw(im)
+    span = max(duration - start, 1e-6)
     for s in shots:
-        x0 = int(s["start"] / duration * width)
-        x1 = max(x0 + 1, int(s["end"] / duration * width))
+        x0 = int((s["start"] - start) / span * width)
+        x1 = max(x0 + 1, int((s["end"] - start) / span * width))
         y = 0
         pal = s.get("palette") or [{"hex": "#000000", "share": 1.0}]
         for sw in pal:
@@ -107,11 +109,13 @@ def colour_script(shots: list[dict], duration: float, path: Path, width: int = M
             d.rectangle([x0, y, x1, min(height, y + hgt)], fill=sw["hex"])
             y += hgt
     f = font(14)
-    for k in range(0, int(duration) + 1, max(10, int(duration / 10) // 10 * 10 or 10)):
-        x = int(k / duration * width)
+    step = max(10, int(span / 10) // 10 * 10 or 10)
+    for k in range(int(np.ceil(start / step)) * step, int(duration) + 1, step):
+        x = int((k - start) / span * width)
         d.line([x, height, x, height + 6], fill=(200, 200, 200))
         m, s_ = divmod(k, 60)
-        d.text((x + 2, height + 6), f"{m}:{s_:02d}", fill=(200, 200, 200), font=f)
+        lab = f"{m // 60}:{m % 60:02d}:{s_:02d}" if m >= 60 else f"{m}:{s_:02d}"
+        d.text((x + 2, height + 6), lab, fill=(200, 200, 200), font=f)
     return save_jpg(im, path, max_edge=None)
 
 

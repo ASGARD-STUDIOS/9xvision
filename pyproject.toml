@@ -1,6 +1,6 @@
 [project]
 name = "ninexvision"
-version = "0.2.0"
+version = "0.3.0"
 description = "Video perception toolkit for AI agents: scene/state segmentation, timestamped contact sheets, zoom, diff, OCR and transcripts. Local, no API keys."
 readme = "README.md"
 license = "MIT"
@@ -13,6 +13,8 @@ dependencies = [
     "mcp>=1.2",
     "yt-dlp>=2025.1.1",
     "ocrmac>=1.0; sys_platform == 'darwin'",
+    "onnxruntime>=1.24.3",
+    "tokenizers>=0.23.3",
 ]
 
 [project.scripts]

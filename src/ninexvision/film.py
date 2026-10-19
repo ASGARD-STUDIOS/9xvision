@@ -70,11 +70,11 @@ BEAT_HOLD = 1.0         # the new content must hold this long (s) to count
 BEAT_MIN = 2.0          # no beats closer than this (s)
 
 
-def content_beats(sig: Signal, cuts: list[float], duration: float) -> list[float]:
+def content_beats(sig: Signal, cuts: list[float], duration: float, start: float = 0.0) -> list[float]:
     """Boundaries inside long shots where the picture content changes and stays changed
     (slides, screen-share pages, scene changes in a single take)."""
     import cv2
-    bounds = [0.0] + cuts + [duration]
+    bounds = [start] + cuts + [duration]
     hold = max(1, int(round(BEAT_HOLD * sig.fps)))
     beats: list[float] = []
     for s, e in zip(bounds, bounds[1:]):
@@ -100,12 +100,13 @@ def content_beats(sig: Signal, cuts: list[float], duration: float) -> list[float
     return beats
 
 
-def shots(sig: Signal, duration: float, min_shot: float = 0.25, beats: bool = True) -> list[dict]:
-    cuts = detect_cuts(sig, min_shot)
-    beat_ts = content_beats(sig, cuts, duration) if beats else []
+def shots(sig: Signal, duration: float, min_shot: float = 0.25, beats: bool = True, start: float = 0.0) -> list[dict]:
+    """Segments between start and duration (= end time; both in original-video seconds)."""
+    cuts = [t for t in detect_cuts(sig, min_shot) if start < t < duration]
+    beat_ts = content_beats(sig, cuts, duration, start) if beats else []
     kinds = {round(t, 3): "cut" for t in cuts}
     kinds.update({round(t, 3): "content" for t in beat_ts})
-    bounds = [0.0] + sorted(cuts + beat_ts) + [duration]
+    bounds = [start] + sorted(cuts + beat_ts) + [duration]
     out = []
     for k in range(len(bounds) - 1):
         s, e = bounds[k], bounds[k + 1]
@@ -130,13 +131,14 @@ def shots(sig: Signal, duration: float, min_shot: float = 0.25, beats: bool = Tr
     return out
 
 
-def rhythm(segs: list[dict], duration: float) -> dict:
+def rhythm(segs: list[dict], duration: float, start: float = 0.0) -> dict:
     """Editing rhythm counts camera cuts only; content beats are not cuts."""
     shot_list = _merge_beats(segs)
     durs = np.array([s["dur"] for s in shot_list]) if shot_list else np.array([duration])
     per_min = []
-    for m in range(int(np.ceil(duration / 60))):
-        per_min.append(sum(1 for s in shot_list if m * 60 <= s["start"] < (m + 1) * 60))
+    for m in range(int(np.ceil((duration - start) / 60))):
+        a = start + m * 60
+        per_min.append(sum(1 for s in shot_list if a <= s["start"] < a + 60))
     return {
         "shots": len(shot_list),
         "asl": round(float(durs.mean()), 2),
@@ -155,3 +157,24 @@ def _merge_beats(segs: list[dict]) -> list[dict]:
         else:
             merged.append(dict(s))
     return merged
+
+
+def refine_cuts(path, times: list[float], analysis_fps: float, video_fps: float) -> list[float]:
+    """Cut times are found at the analysis rate (~12 fps). Re-decode a short window around each at the
+    native frame rate and move the cut to the first frame of the new shot (frame-accurate)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .media import stream_frames
+    import cv2
+
+    fps = min(max(video_fps, 1.0), 120.0)
+
+    def one(t: float) -> float:
+        frames = list(stream_frames(path, fps, 96, pix="gray", start=max(0.0, t - 1.5 / analysis_fps), end=t + 0.5 / analysis_fps))
+        if len(frames) < 3:
+            return t
+        d = [float(cv2.absdiff(a[1], b[1]).mean()) for a, b in zip(frames, frames[1:])]
+        k = int(np.argmax(d))
+        return round(frames[k + 1][0], 3)
+
+    with ThreadPoolExecutor(8) as ex:
+        return list(ex.map(one, times))

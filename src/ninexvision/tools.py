@@ -13,10 +13,11 @@ from .watch import load, watches_root
 def zoom(watch: str, start, end, n: int = 12) -> dict:
     d, m = load(watch)
     t0, t1 = media.parse_t(start), media.parse_t(end)
-    dur = m["probe"]["duration"]
-    t0, t1 = max(0.0, min(t0, dur)), max(0.0, min(t1, dur))
+    lo = m["probe"].get("offset", 0.0)
+    hi = lo + m["probe"]["duration"]
+    t0, t1 = max(lo, min(t0, hi)), max(lo, min(t1, hi))
     if t1 <= t0:
-        t1 = min(dur, t0 + 1.0)
+        t1 = min(hi, t0 + 1.0)
     n = max(2, min(int(n), 30))
     times = list(np.linspace(t0, t1, n))
     frames = [media.grab_frame(m["file"], t, max_edge=720) for t in times]
@@ -28,7 +29,10 @@ def zoom(watch: str, start, end, n: int = 12) -> dict:
 
 def frame(watch: str, at, crop: str | None = None, max_edge: int = render.MAX_EDGE) -> dict:
     d, m = load(watch)
-    t = media.parse_t(at)
+    asked = media.parse_t(at)
+    lo = m["probe"].get("offset", 0.0)
+    hi = lo + m["probe"]["duration"]
+    t = min(max(asked, lo), max(lo, hi - 0.05))
     fr = media.grab_frame(m["file"], t)
     H, W = fr.shape[:2]
     tag = ""
@@ -48,8 +52,11 @@ def frame(watch: str, at, crop: str | None = None, max_edge: int = render.MAX_ED
         s = max_edge / max(im.size)
         im = im.resize((round(im.width * s), round(im.height * s)), Image.LANCZOS)
     im.save(p, optimize=True)
-    return {"path": str(p), "size": list(im.size), "source_px": [W, H], "t": round(t, 2),
-            "tokens": render.token_estimate(*im.size)}
+    out = {"path": str(p), "size": list(im.size), "source_px": [W, H], "t": round(t, 2),
+           "tokens": render.token_estimate(*im.size)}
+    if abs(asked - t) > 0.06:
+        out["note"] = f"asked for {media.fmt_t(asked)}, which is outside {media.fmt_t(lo)}-{media.fmt_t(hi)}; showing {media.fmt_t(t)}"
+    return out
 
 
 def diff(watch: str, a, b) -> dict:
@@ -67,7 +74,41 @@ def diff(watch: str, a, b) -> dict:
     return res
 
 
-def search(query: str, watch: str | None = None, limit: int = 30) -> list[dict]:
+def search(query: str, watch: str | None = None, limit: int = 30, visual: bool = True, log=lambda s: None) -> dict:
+    """Text hits (OCR'd screen text, speech) across watches, plus visual moments (what is in the picture)
+    in one watch: the given one, or the most recent if none is given."""
+    out: dict = {"query": query, "text_hits": text_search(query, watch, limit)}
+    if visual:
+        from . import semantic
+        try:
+            d, m = load(watch) if watch else load(list_watches()[0]["id"])
+        except (FileNotFoundError, IndexError):
+            return out
+        try:
+            out["visual"] = {"watch": m["id"], **semantic.search(d, m, query, log=log)}
+        except ImportError as e:
+            out["visual"] = {"error": f"visual search needs onnxruntime + tokenizers ({e})"}
+    return out
+
+
+def search_text(r: dict) -> str:
+    """Readable form of search() for people and shell agents."""
+    L = [f"text hits for {r['query']!r}: {len(r['text_hits'])}"]
+    for h in r["text_hits"][:15]:
+        L.append(f"  {media.fmt_t(h['t'])}  {h['kind']:<11} {h['text'][:90]}  [{h['watch']}]")
+    v = r.get("visual")
+    if v and v.get("error"):
+        L.append(f"visual: {v['error']}")
+    elif v:
+        L.append(f"visual moments in {v['watch']}: " + " · ".join(f"{mo['at']} {mo['match']} {mo['score']:.2g}" for mo in v["moments"]))
+        if v.get("sheet"):
+            L.append(f"  best frames: {v['sheet']['path']}")
+        if v["moments"] and all(mo["match"] == "weak" for mo in v["moments"]):
+            L.append("  all weak: probably not in the video")
+    return "\n".join(L)
+
+
+def text_search(query: str, watch: str | None = None, limit: int = 30) -> list[dict]:
     """Case-insensitive text search over OCR'd screen text and transcripts."""
     q = query.lower()
     dirs = [load(watch)[0]] if watch else sorted(p.parent for p in watches_root().glob("*/watch.json"))
@@ -108,18 +149,45 @@ def look(watch: str, what: str) -> dict:
     d, m = load(watch)
     kind, _, num = what.partition(":")
     k = int(num) if num.isdigit() else 1
-    if kind == "sheet":
-        rel = m["sheets"][k - 1]["path"]
-    elif kind == "timeline":
-        rel = m["timeline_sheets"][k - 1]["path"]
-    elif kind == "view":
-        rel = next(v["image"] for v in m["views"] if v["id"] == k)
-    elif kind == "shot":
-        rel = next(s["keyframe"] for s in m["shots"] if s["id"] == k)
-    elif kind == "page":
-        rel = next(p["stitched"] for p in m["pages"] if p["id"] == k and p.get("stitched"))
-    elif kind in ("colour", "color", "colour_script"):
-        rel = m["colour_script"]
-    else:
+    table = {"sheet": [s["path"] for s in m.get("sheets", [])],
+             "timeline": [s["path"] for s in m.get("timeline_sheets", [])],
+             "view": {v["id"]: v["image"] for v in m.get("views", [])},
+             "shot": {s["id"]: s["keyframe"] for s in m.get("shots", [])},
+             "page": {p["id"]: p["stitched"] for p in m.get("pages", []) if p.get("stitched")}}
+    if kind in ("colour", "color", "colour_script"):
+        if not m.get("colour_script"):
+            raise ValueError("this watch has no colour script (screen mode); try sheet:1 or view:N")
+        return {"path": str(Path(d) / m["colour_script"])}
+    if kind not in table:
         raise ValueError("what must be sheet:N, timeline:N, view:N, shot:N, page:N or colour")
+    items = table[kind]
+    if not items:
+        raise ValueError(f"this {m['mode']}-mode watch has no {kind}s"
+                         + ("; film watches have shot:N and sheet:N" if kind in ("view", "timeline", "page") else
+                            "; screen watches have view:N, timeline:N and sheet:N" if kind == "shot" else ""))
+    rel = items[k - 1] if isinstance(items, list) and 1 <= k <= len(items) else items.get(k) if isinstance(items, dict) else None
+    if rel is None:
+        ids = list(range(1, len(items) + 1)) if isinstance(items, list) else sorted(items)
+        raise ValueError(f"no {kind}:{k}; this watch has {kind}:{ids[0]}..{ids[-1]}" if len(ids) > 1 else f"no {kind}:{k}; only {kind}:{ids[0]}")
     return {"path": str(Path(d) / rel)}
+
+
+def capture_qa(source: str, start=None, end=None, fov_deg: float | None = None) -> dict:
+    """Frame pacing, hitches, stereo, fast turns and flashes for a game / XR / app capture (file, URL or watch id)."""
+    from . import qa
+    from .watch import HOME, watch as run_watch
+    p = Path(source).expanduser()
+    if media.is_url(source):
+        d = run_watch(source, start=start, end=end, transcribe="off", ocr=False)
+        f = json.loads((d / "watch.json").read_text())["file"]
+        out = d / "qa"
+    elif p.exists() and p.is_file():
+        f, out = str(p), HOME / "qa" / p.stem
+    else:
+        d, m = load(source)
+        f, out = m["file"], d / "qa"
+    s = media.parse_t(start) if start not in (None, "") else None
+    e = media.parse_t(end) if end not in (None, "") else None
+    r = qa.analyse(f, s, e, fov_deg, out_dir=out)
+    r["summary"] = qa.summary_md(r)
+    return r

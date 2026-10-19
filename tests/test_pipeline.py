@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from ninexvision import media, tools
 from ninexvision.watch import watch
@@ -55,7 +55,7 @@ def screen_video(tmp_path_factory) -> Path:
         for k in range(5):
             y = 160 + k * 90
             dr.rounded_rectangle([20, y, W - 20, y + 70], 12, outline=(80, 160, 90), width=3)
-            dr.text((40, y + 25), f"Row {k + 1}", fill=(30, 30, 30))
+            dr.text((40, y + 20), f"Row {k + 1}", fill=(30, 30, 30), font=ImageFont.load_default(size=26))
         if toggle:
             dr.ellipse([W - 80, 182, W - 50, 212], fill=(60, 170, 80))
         dr.rectangle([20, H - 90, W - 20, H - 40], fill=(70, 160, 90))
@@ -90,7 +90,9 @@ def test_screen_states_and_revisit(screen_video, tmp_path, monkeypatch):
     assert m["transitions"][0]["type"] == "local change"   # the toggle
 
 
-@pytest.mark.skipif(not __import__("ninexvision.extract", fromlist=["x"]).ocr_backend(), reason="needs an OCR backend")
+@pytest.mark.skipif(__import__("ninexvision.extract", fromlist=["x"]).ocr_backend() != "apple-vision",
+                    reason="needs Apple Vision: tesseract cannot read this synthetic text inside outlined boxes "
+                           "(it reads the labels on real recordings)")
 def test_change_labels_name_the_toggle(screen_video, tmp_path, monkeypatch):
     monkeypatch.setenv("NINEXVISION_HOME", str(tmp_path))
     wd = watch(str(screen_video), mode="screen", out=str(tmp_path / "w"), transcribe="off", ocr=True)

@@ -10,7 +10,7 @@ import urllib.request
 from importlib import resources
 from pathlib import Path
 
-from . import extract
+from . import extract, semantic
 
 WHISPER_MODEL = "ggml-small.en.bin"
 WHISPER_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{WHISPER_MODEL}"
@@ -29,7 +29,7 @@ def checks() -> list[dict]:
     ocr = extract.ocr_backend()
     whisper_cpp = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     whisper = whisper_cpp or shutil.which("whisper")   # openai-whisper fetches its own models
-    model = extract._whisper_cpp_model(0) if whisper_cpp else True
+    model = extract._whisper_cpp_model(0) if whisper_cpp else None
     return [
         {"name": "ffmpeg + ffprobe", "required": True, "ok": bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
          "fix": f"{pkg} ffmpeg", "auto": ["brew", "install", "ffmpeg"] if brew else None},
@@ -40,8 +40,12 @@ def checks() -> list[dict]:
          "why": "transcribes speech when a video has no captions",
          "fix": "brew install whisper-cpp" if brew else "pipx install openai-whisper  (or build github.com/ggml-org/whisper.cpp)",
          "auto": ["brew", "install", "whisper-cpp"] if brew else None},
-        {"name": "whisper model", "required": False, "ok": model is not None,
-         "why": f"{WHISPER_MODEL}, 466 MB, into {MODELS}", "fix": "9xvision setup", "auto": "model"},
+        *([{"name": "whisper model", "required": False, "ok": model is not None,
+            "why": f"{WHISPER_MODEL}, 466 MB, into {MODELS}", "fix": "9xvision setup", "auto": "model"}]
+          if whisper_cpp or brew else []),   # openai-whisper fetches its own models
+        {"name": "visual search model", "required": False, "ok": semantic.available(),
+         "why": f"SigLIP, {semantic.SIZE_MB} MB: find moments by what is in the picture", "fix": "9xvision setup",
+         "auto": "siglip"},
     ]
 
 
@@ -153,6 +157,10 @@ def setup(yes: bool = False, dry: bool = False, remove: bool = False, only: list
                     if r["auto"] == "model":
                         if shutil.which("whisper-cli") or shutil.which("whisper-cpp") or dry:
                             _download_model(dry)
+                    elif r["auto"] == "siglip":
+                        print(f"  downloading SigLIP ({semantic.SIZE_MB} MB) -> {semantic.model_dir()}")
+                        if not dry:
+                            semantic.download(lambda m: None)
                     else:
                         _run(r["auto"], dry)
         bad = [r["name"] for r in checks() if r["required"] and not r["ok"]] if not dry else []
@@ -192,6 +200,8 @@ def setup(yes: bool = False, dry: bool = False, remove: bool = False, only: list
     if not did:
         print("No agents found (Claude Code, Codex, Cursor, Claude Desktop). Any agent with a shell can still run "
               "`9xvision`; give it the skill text from `9xvision skill`.")
+    elif dry:
+        print("Dry run: nothing was changed.")
     elif not remove:
         print("Done. Restart the agent apps, then ask: \"watch <video> and tell me ...\"")
     return 0

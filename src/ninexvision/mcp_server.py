@@ -41,10 +41,14 @@ def _explained(fn):
 
 @mcp.tool()
 @_explained
-def watch(source: str, mode: str = "auto", force: bool = False) -> list:
-    """Analyse a local video file or URL (YouTube, Vimeo, TikTok, X...). mode: auto | film | screen
-    (screen = app/screen recordings). Returns INDEX.md plus the first overview contact sheet."""
-    wd = run_watch(source, mode=mode, force=force)
+def watch(source: str, mode: str = "auto", force: bool = False, start: str | None = None, end: str | None = None,
+          cookies_from_browser: str | None = None) -> list:
+    """Analyse a local video file or URL (YouTube, Vimeo, TikTok, X, Instagram...). mode: auto | film | screen
+    (screen = app/screen recordings). start/end ("12:30", "1:02:00", or seconds) watch only a window, and a URL
+    downloads only that part: use it for long videos when the question is about one stretch. Times stay in
+    full-video time. cookies_from_browser ("chrome", "safari", ...) is for login-gated URLs, only with the
+    user's OK. Returns INDEX.md plus the first overview contact sheet. First run takes ~1-2 s per minute."""
+    wd = run_watch(source, mode=mode, force=force, start=start, end=end, cookies_from_browser=cookies_from_browser)
     m = json.loads((wd / "watch.json").read_text())
     out: list = [(wd / "INDEX.md").read_text()]
     if m.get("sheets"):
@@ -87,9 +91,32 @@ def diff(watch_id: str, a: str, b: str) -> list:
 
 @mcp.tool()
 @_explained
-def search(query: str, watch_id: str | None = None) -> str:
-    """Find on-screen text (OCR) and spoken words across watched videos, with timestamps."""
-    return json.dumps(tools.search(query, watch_id), indent=1, ensure_ascii=False)
+def search(query: str, watch_id: str | None = None, visual: bool = True) -> list:
+    """Find moments by on-screen text (OCR), spoken words, AND what is in the picture ("a red car at night",
+    "a pie chart", "someone hugging"). Text hits cover every watch; visual moments cover watch_id (default:
+    the most recent watch) and come with a contact sheet of the best frames. Visual scores: strong >= 0.10;
+    all-weak means it is probably not in the video. The first visual search on a watch indexes it (seconds)."""
+    r = tools.search(query, watch_id, visual=visual)
+    out: list = [json.dumps(r, indent=1, ensure_ascii=False)]
+    sheet = (r.get("visual") or {}).get("sheet")
+    if sheet:
+        out.append(_img(sheet["path"]))
+    return out
+
+
+@mcp.tool()
+@_explained
+def qa(source: str, start: str | None = None, end: str | None = None, fov_deg: float | None = None) -> list:
+    """Capture QA for a game, XR (VR/AR headset) or app recording: frame pacing (hitches = frames the build
+    failed to deliver while the picture moved, with times and ms; effective fps per second), side-by-side /
+    top-bottom stereo detection, comfort (fast camera turns; pass the headset's horizontal fov_deg for deg/s)
+    and flashes above 3 per second (photosensitivity triage). source = file, URL or watch id.
+    Returns a summary plus a chart."""
+    r = tools.capture_qa(source, start, end, fov_deg)
+    out: list = [r["summary"]]
+    if r.get("chart"):
+        out.append(_img(r["chart"]))
+    return out
 
 
 @mcp.tool()

@@ -187,13 +187,17 @@ def _whisper_cpp_model(duration: float) -> Path | None:
     return None
 
 
-def whisper_transcribe(media: Path, workdir: Path, duration: float = 0.0) -> tuple[list[dict], str] | None:
-    """Local Whisper: whisper.cpp first (fast, Metal), then the openai-whisper CLI. Returns (segments, backend)."""
+def whisper_transcribe(media: Path, workdir: Path, duration: float = 0.0,
+                       window: tuple[float, float] | None = None) -> tuple[list[dict], str] | None:
+    """Local Whisper: whisper.cpp first (fast, Metal), then the openai-whisper CLI. Returns (segments, backend).
+    window = (start, end) in file seconds: transcribe only that part; segment times stay file times."""
     cli = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     model = _whisper_cpp_model(duration) if cli else None
+    w0 = window[0] if window else 0.0
+    cut = ["-ss", f"{window[0]:.3f}", "-t", f"{window[1] - window[0]:.3f}"] if window else []
     if cli and model:
         wav = workdir / "audio16k.wav"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(media), "-vn", "-ac", "1", "-ar", "16000", str(wav)],
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *cut, "-i", str(media), "-vn", "-ac", "1", "-ar", "16000", str(wav)],
                        capture_output=True)
         base = workdir / "whisper"
         subprocess.run([cli, "-m", str(model), "-f", str(wav), "-l", "auto" if ".en" not in model.name else "en",
@@ -206,18 +210,27 @@ def whisper_transcribe(media: Path, workdir: Path, duration: float = 0.0) -> tup
             for s in data.get("transcription", []):
                 txt = s.get("text", "").strip()
                 if txt and txt not in ("[Music]", "[MUSIC]", "(music)") and txt.strip("♪♫ ."):
-                    segs.append({"start": round(s["offsets"]["from"] / 1000, 2), "end": round(s["offsets"]["to"] / 1000, 2), "text": txt})
+                    segs.append({"start": round(w0 + s["offsets"]["from"] / 1000, 2),
+                                 "end": round(w0 + s["offsets"]["to"] / 1000, 2), "text": txt})
             js.unlink(missing_ok=True)
             return segs, f"whisper.cpp:{model.stem.replace('ggml-', '')}"
     if shutil.which("whisper"):
         model = "small"
-        out = subprocess.run(["whisper", str(media), "--model", model, "--output_format", "json",
+        src = media
+        if window:
+            src = workdir / "audio_window.wav"
+            subprocess.run(["ffmpeg", "-v", "error", "-y", *cut, "-i", str(media), "-vn", "-ac", "1", "-ar", "16000", str(src)],
+                           capture_output=True)
+        out = subprocess.run(["whisper", str(src), "--model", model, "--output_format", "json",
                               "--output_dir", str(workdir), "--verbose", "False", "--fp16", "False"],
                              capture_output=True, text=True)
-        js = workdir / (media.stem + ".json")
+        js = workdir / (src.stem + ".json")
+        if window:
+            src.unlink(missing_ok=True)
         if js.exists():
             data = json.loads(js.read_text())
-            segs = [{"start": round(s["start"], 2), "end": round(s["end"], 2), "text": s["text"].strip()} for s in data.get("segments", [])]
+            segs = [{"start": round(w0 + s["start"], 2), "end": round(w0 + s["end"], 2), "text": s["text"].strip()}
+                    for s in data.get("segments", [])]
             return segs, f"openai-whisper:{model}"
         return None
     return None

@@ -1,6 +1,7 @@
 """The `watch` pipeline: source -> watch folder (INDEX.md, watch.json, sheets, keyframes)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from glob import escape as glob_escape
@@ -25,6 +26,13 @@ def _slug(text: str) -> str:
     return (s[:40] or "video").strip("-")
 
 
+def download_dir(url: str, section: tuple[float, float] | None = None) -> Path:
+    """One folder per exact URL (+ section): a readable slug plus a hash of the full, case-sensitive URL."""
+    key = url.strip() + (f"#{section[0]:.3f}-{section[1]:.3f}" if section else "")
+    slug = _slug(re.sub(r"^https?://(www\.)?", "", url) + (f"-{section[0]:.0f}-{min(section[1], 10**6):.0f}" if section else ""))
+    return HOME / "downloads" / f"{slug}-{hashlib.sha1(key.encode()).hexdigest()[:8]}"
+
+
 def resolve(watch: str) -> Path:
     """Accept a watch dir path or a watch id."""
     p = Path(watch).expanduser()
@@ -33,10 +41,16 @@ def resolve(watch: str) -> Path:
     q = watches_root() / watch
     if (q / "watch.json").exists():
         return q
-    hits = sorted(watches_root().glob(f"*{watch}*/watch.json"))
+    hits = sorted(watches_root().glob(f"*{glob_escape(watch)}*/watch.json"))
     if len(hits) == 1:
         return hits[0].parent
-    raise FileNotFoundError(f"No watch named {watch!r} (looked in {watches_root()})")
+    base = {re.sub(r"-\d+-\d+s$", "", h.parent.name) for h in hits}
+    if len(base) == 1:   # one video, several windows: the full watch if there is one, else the most recent
+        full = [h for h in hits if not re.search(r"-\d+-\d+s$", h.parent.name)]
+        return max(full or hits, key=lambda h: h.stat().st_mtime).parent
+    if hits:
+        raise FileNotFoundError(f"{watch!r} matches {len(hits)} watches: " + ", ".join(h.parent.name for h in hits[:6]))
+    raise FileNotFoundError(f"No watch named {watch!r} (looked in {watches_root()}; `9xvision list` shows them)")
 
 
 def load(watch: str) -> tuple[Path, dict]:
@@ -46,13 +60,23 @@ def load(watch: str) -> tuple[Path, dict]:
 
 def watch(source: str, mode: str = "auto", out: str | None = None, force: bool = False,
           transcribe: str = "auto", ocr: bool = True, sheet_cells: int | None = None,
-          log=lambda m: None) -> Path:
-    t0 = time.time()
+          start: str | float | None = None, end: str | float | None = None,
+          cookies_from_browser: str | None = None, log=lambda m: None) -> Path:
+    """start/end (mm:ss, h:mm:ss or seconds) watch only that window; for a URL only that part is downloaded.
+    Every time reported stays in original-video time."""
+    clock = time.time()
     info: dict = {}
+    w_start = media.parse_t(start) if start not in (None, "") else None
+    w_end = media.parse_t(end) if end not in (None, "") else None
+    if w_start is not None and w_end is not None and w_end <= w_start:
+        raise ValueError(f"end ({end}) must be after start ({start})")
     if media.is_url(source):
-        dl = HOME / "downloads" / _slug(re.sub(r"^https?://(www\.)?", "", source))
-        log(f"fetching {source}")
-        path, info = media.fetch(source, dl)
+        section = None
+        if w_start is not None or w_end is not None:
+            section = (w_start or 0.0, w_end if w_end is not None else 10 ** 7)
+        dl = download_dir(source, section)
+        log(f"fetching {source}" + (f" ({media.fmt_t(section[0])}-{media.fmt_t(section[1]) if section[1] < 10**6 else 'end'})" if section else ""))
+        path, info = media.fetch(source, dl, section=section, cookies_from_browser=cookies_from_browser)
     given = None
     if not media.is_url(source):
         given = Path(source).expanduser().absolute()
@@ -60,15 +84,24 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
         if not path.exists():
             raise FileNotFoundError(path)
     pr = media.probe(path)
+    t0 = max(pr.offset, w_start) if w_start is not None else pr.offset
+    t1 = min(pr.end, w_end) if w_end is not None else pr.end
+    if t1 - t0 < 0.2:
+        raise ValueError(f"the window {media.fmt_t(t0)}-{media.fmt_t(t1)} is empty; the video covers "
+                         f"{media.fmt_t(pr.offset)}-{media.fmt_t(pr.end)}")
+    windowed = t0 > pr.offset + 0.05 or t1 < pr.end - 0.05
+    full = float(info.get("duration") or 0) or pr.end
     title = info.get("title") or (given.stem if given and pr.title == path.stem else pr.title)
     if ";" in title and len(set(title.split(";"))) == 1:   # some muxers repeat the title per stream
         title = title.split(";")[0]
-    wid = f"{_slug(title)}-{media.file_fingerprint(path)}"
+    wid = f"{_slug(title)}-{media.file_fingerprint(path)}" + (f"-{t0:.0f}-{t1:.0f}s" if windowed else "")
     wdir = Path(out).expanduser() if out else watches_root() / wid
     meta_path = wdir / "watch.json"
+    settings = {"ocr": bool(ocr), "transcribe": transcribe, "sheet_cells": sheet_cells}
     if meta_path.exists() and not force:
         prev = json.loads(meta_path.read_text())
-        if prev.get("version") == __version__ and (mode == "auto" or prev.get("mode") == mode):
+        same = prev.get("settings", settings) == settings
+        if prev.get("version") == __version__ and (mode == "auto" or prev.get("mode") == mode) and same:
             log(f"cached: {wdir}")
             return wdir
     if wdir.exists() and force:
@@ -76,14 +109,16 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
             shutil.rmtree(wdir / sub, ignore_errors=True)
     wdir.mkdir(parents=True, exist_ok=True)
 
-    log(f"analysing {pr.width}x{pr.height} {pr.duration:.1f}s")
-    sig = signal.compute(str(path), pr, "auto" if mode == "auto" else mode)
+    log(f"analysing {pr.width}x{pr.height} {media.fmt_t(t0)}-{media.fmt_t(t1)}")
+    sig = signal.compute(str(path), pr, "auto" if mode == "auto" else mode,
+                         start=t0 if windowed else None, end=t1 if windowed else None)
     chosen = signal.guess_mode(pr, sig) if mode == "auto" else mode
     log(f"mode: {chosen}")
 
     meta: dict = {
         "version": __version__, "id": wdir.name, "dir": str(wdir), "source": source, "file": str(path),
         "title": title, "mode": chosen, "probe": pr.to_dict(), "info": info,
+        "window": [round(t0, 2), round(t1, 2)], "full_duration": round(full, 2), "settings": settings,
         "analysis": {"fps": sig.fps, "width": sig.width, "mask_top": sig.mask_top, "mask_bottom": sig.mask_bottom},
     }
 
@@ -100,15 +135,17 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
         level = media.audio_level(path)
         meta["audio"]["mean_db"] = level
         if vtts:
-            segs = extract.parse_vtt(vtts[0])
+            segs = [s for s in extract.parse_vtt(vtts[0]) if s["end"] > t0 and s["start"] < t1]
             meta["audio"]["transcript"] = f"captions:{vtts[0].name}"
         elif level is not None and level < -55:
             meta["audio"]["transcript"] = "skipped: near-silent audio"
-        elif transcribe == "on" or (transcribe == "auto" and pr.duration <= 20 * 60):
+        elif transcribe == "on" or (transcribe == "auto" and t1 - t0 <= 20 * 60):
             log("transcribing locally")
-            res = extract.whisper_transcribe(path, wdir, pr.duration)
+            res = extract.whisper_transcribe(path, wdir, t1 - t0,
+                                             window=(t0 - pr.offset, t1 - pr.offset) if windowed else None)
             if res:
                 segs, backend = res
+                segs = [{**s, "start": round(s["start"] + pr.offset, 2), "end": round(s["end"] + pr.offset, 2)} for s in segs]
                 meta["audio"]["transcript"] = backend
             else:
                 meta["audio"]["transcript"] = "unavailable: install whisper.cpp (brew install whisper-cpp) + a ggml model"
@@ -122,9 +159,9 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
     if chosen == "screen":
         _screen(meta, sig, path, pr, wdir, segs, ocr, sheet_cells, log)
     else:
-        _film(meta, sig, path, pr, wdir, segs, ocr, sheet_cells, log)
+        _film(meta, sig, path, pr, wdir, segs, ocr, sheet_cells, log, span=(t0, t1))
 
-    meta["elapsed_s"] = round(time.time() - t0, 1)
+    meta["elapsed_s"] = round(time.time() - clock, 1)
     meta_path.write_text(json.dumps(meta, indent=1, ensure_ascii=False))
     (wdir / "INDEX.md").write_text(index_md(meta), encoding="utf-8")
     log(f"done in {meta['elapsed_s']}s -> {wdir}")
@@ -133,9 +170,18 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
 
 # ---------------------------------------------------------------- film
 
-def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
-    shots = film.shots(sig, pr.duration)
+def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log, span=None):
+    t0, t1 = span or (pr.offset, pr.end)
+    shots = film.shots(sig, t1, start=t0)
     log(f"{len(shots)} shots")
+    cut_idx = [k for k, s in enumerate(shots) if s["boundary"] == "cut"]
+    if cut_idx:   # frame-accurate cut times (analysis runs at ~12 fps)
+        for k, t in zip(cut_idx, film.refine_cuts(path, [shots[k]["start"] for k in cut_idx], sig.fps, pr.fps)):
+            if shots[k - 1]["start"] < t < shots[k]["end"]:
+                shots[k]["start"] = shots[k - 1]["end"] = round(t, 3)
+        for s in shots:
+            s["dur"] = round(s["end"] - s["start"], 3)
+            s["key_t"] = round(min(max(s["key_t"], s["start"]), s["end"] - 0.02), 2)
     key_edge = 1280
     for s, fr in zip(shots, media.grab_frames(path, [s["key_t"] for s in shots], max_edge=key_edge)):
         kp = wdir / "keyframes" / f"shot_{s['id']:03d}_{s['key_t']:.2f}.jpg"
@@ -147,9 +193,23 @@ def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
         if segs:
             s["speech"] = extract.segments_between(segs, s["start"], s["end"])
     meta["shots"] = shots
-    meta["rhythm"] = film.rhythm(shots, pr.duration)
+    meta["rhythm"] = film.rhythm(shots, t1, start=t0)
+    if pr.has_audio and (meta["audio"].get("mean_db") is None or meta["audio"]["mean_db"] > -55):
+        from . import audio
+        log("listening (tempo, beats, loudness)")
+        snd = audio.analyse(path, t0, t1, [s["start"] for s in shots if s["boundary"] == "cut"], pr.fps)
+        if snd.get("present"):
+            (wdir / "sound.json").write_text(json.dumps(snd))
+            beats = np.array(snd.get("beats") or [])
+            tol = (snd.get("cuts_vs_beats") or {}).get("tolerance_s")
+            if len(beats) and tol:
+                for s in shots:
+                    if s["boundary"] == "cut":
+                        s["on_beat"] = bool(np.min(np.abs(beats - s["start"])) <= tol)
+            meta["sound"] = {k: v for k, v in snd.items() if k not in ("beats", "loudness_curve")}
+            meta["sound"]["file"] = "sound.json"
     cs = wdir / "sheets" / "colour_script.jpg"
-    render.colour_script(shots, pr.duration, cs)
+    render.colour_script(shots, t1, cs, start=t0)
     meta["colour_script"] = str(cs.relative_to(wdir))
     meta["sheets"] = _sheets(wdir, path, [(s["key_t"], f"#{s['id']} {media.fmt_t(s['start'])}", s["id"]) for s in shots],
                              pr, sheet_cells, "shot", images={s["id"]: wdir / s["keyframe"] for s in shots})
@@ -186,7 +246,11 @@ def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
             vp = wdir / "views" / f"view_{v:02d}_{rep_t:.2f}.png"
             vp.parent.mkdir(parents=True, exist_ok=True)
             from PIL import Image
-            Image.fromarray(fr).save(vp, optimize=True)
+            im = Image.fromarray(fr)
+            if max(im.size) > render.MAX_EDGE:   # what a model would see anyway; frame --crop gives full resolution
+                s_ = render.MAX_EDGE / max(im.size)
+                im = im.resize((round(im.width * s_), round(im.height * s_)), Image.LANCZOS)
+            im.save(vp, optimize=True)
             view = {"id": v, "page": page_of.get(v), "moving": bool(s.get("moving")), "first_t": round(rep_t, 2), "image": str(vp.relative_to(wdir)),
                     "background": extract.background_colour(fr), "palette": extract.palette(fr, k=6), "visits": []}
             if do_ocr:
@@ -308,7 +372,11 @@ def index_md(m: dict) -> str:
     L.append(f"# 9xvision watch: {m['title']}")
     L.append("")
     L.append(f"- source: {m['source']}")
-    L.append(f"- {pr['width']}x{pr['height']}, {media.fmt_t(pr['duration'])} ({pr['duration']:.1f}s), {pr['fps']} fps, mode **{m['mode']}**")
+    w0, w1 = m.get("window") or (0.0, pr["duration"])
+    full = m.get("full_duration") or pr["duration"]
+    L.append(f"- {pr['width']}x{pr['height']}, {media.fmt_t(full)} ({full:.1f}s), {pr['fps']} fps, mode **{m['mode']}**")
+    if w0 > 0.05 or w1 < full - 0.05:
+        L.append(f"- **window: {media.fmt_t(w0)}-{media.fmt_t(w1)} only** (all times are from the start of the full video)")
     au = m.get("audio", {})
     L.append(f"- audio: {'yes' if au.get('present') else 'no'}" + (f", transcript: {au.get('transcript')}" if au.get("transcript") else ""))
     if m.get("info", {}).get("uploader"):
@@ -336,8 +404,9 @@ def index_md(m: dict) -> str:
         L.append(f"## Summary: {len(views)} distinct views ({moving} captured while moving, marked ~), {len(states)} states")
         L.append("")
         L.append("## Flow")
-        L.append("`at` names the text whose row changed: `+` = gained colour (usually selected / turned on), "
-                 "`−` = lost colour (usually deselected / turned off). Check with `diff` when it matters.")
+        L.append("`at` names the text nearest each change: `+` = that area gained colour (often: selected / turned on), "
+                 "`−` = lost colour (often: deselected). It is a pointer to where to look, not a verdict: "
+                 "confirm states with `diff` before you report them.")
         L.append("```")
         if states:
             L.append(f"{media.fmt_t(states[0]['start'])}  start on V{states[0]['view']}")
@@ -394,15 +463,44 @@ def index_md(m: dict) -> str:
             L.append(f"plus {r['content_beats']} content beats (the picture changed and held inside a shot: slides, pages, scene changes in one take). Segments below = shots + beats.")
         L.append(f"cuts per minute: {r.get('cuts_per_minute')}")
         L.append("")
+        snd = m.get("sound")
+        if snd:
+            L.append("## Sound")
+            if snd.get("bpm"):
+                L.append(f"- music: ~{snd['bpm']:g} BPM (pulse clarity {snd['pulse_clarity']}); beat times in `sound.json`")
+                cb = snd.get("cuts_vs_beats") or {}
+                if cb:
+                    off = f"; median offset {cb['median_offset_frames']:+g} frames" if "median_offset_frames" in cb else ""
+                    L.append(f"- edit vs music: **{cb['verdict']}**: {cb['on_beat']} of {cb['cuts']} cuts within "
+                             f"±{cb['tolerance_s'] * 1000:.0f} ms of a beat ({cb['share']:.0%}; chance would be {cb['chance']:.0%}){off}. "
+                             "♪ in the table marks cuts on the beat.")
+            else:
+                L.append(f"- no steady beat (pulse clarity {snd['pulse_clarity']}): speech, ambience or free-time music")
+            if snd.get("level_dbfs"):
+                L.append(f"- level: mean {snd['level_dbfs']['mean']} dBFS, peak {snd['level_dbfs']['max']} dBFS")
+            if snd.get("jumps"):
+                L.append("- sudden rises (drops, hits, entries): " + ", ".join(f"{media.fmt_t(j['t'])} (+{j['rise_db']:g} dB)" for j in snd["jumps"]))
+            if snd.get("silences"):
+                L.append("- silences: " + ", ".join(f"{media.fmt_t(a)}-{media.fmt_t(b)}" for a, b in snd["silences"][:8]))
+            L.append("")
         L.append("## Shots")
-        has_text = any(s.get("text") for s in m.get("shots", []))
+        shots_ = m.get("shots", [])
+        counts: dict[str, int] = {}
+        for s in shots_:
+            for line in set(s.get("text") or []):
+                counts[line] = counts.get(line, 0) + 1
+        boiler = {t for t, c in counts.items() if len(shots_) >= 5 and c >= 0.6 * len(shots_)}
+        if boiler:   # logos, sidebars, sponsor bars: say them once, keep the table for what changes
+            L.append("On screen in most segments (left out of the table): " + " | ".join(sorted(boiler))[:400])
+            L.append("")
+        has_text = any(set(s.get("text") or []) - boiler for s in shots_)
         L.append("| # | start | dur | via | motion | palette |" + (" on-screen text |" if has_text else "") + " speech |")
         L.append("|---|---|---|---|---|---|" + ("---|" if has_text else "") + "---|")
         for s in m.get("shots", []):
             pal = " ".join(p["hex"] for p in s.get("palette", [])[:3])
             sp = (s.get("speech") or "").replace("|", "/")[:140]
-            via = {"cut": "cut", "content": "beat", "start": "-"}.get(s.get("boundary"), "cut")
-            tx = (" / ".join(s.get("text") or []).replace("|", "/")[:160] + " |") if has_text else ""
+            via = {"cut": "cut", "content": "beat", "start": "-"}.get(s.get("boundary"), "cut") + (" ♪" if s.get("on_beat") else "")
+            tx = (" / ".join(x for x in (s.get("text") or []) if x not in boiler).replace("|", "/")[:200] + " |") if has_text else ""
             L.append(f"| {s['id']} | {media.fmt_t(s['start'])} | {s['dur']} | {via} | {s['motion']['class']} | {pal} | {tx} {sp} |")
     if (Path(m["dir"]) / "transcript.txt").exists():
         L.append("")

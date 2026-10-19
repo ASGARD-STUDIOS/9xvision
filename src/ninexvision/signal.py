@@ -37,22 +37,25 @@ def default_masks(pr: Probe, mode: str) -> tuple[float, float]:
     return 0.035, 0.0                            # desktop menu bar / tablet status bar
 
 
-def analysis_fps(pr: Probe, mode: str) -> float:
+def analysis_fps(pr: Probe, mode: str, span: float | None = None) -> float:
     base = 12.0
-    if pr.duration > 3600:
+    if (span or pr.duration) > 3600:
         base /= 2
     return float(min(base, pr.fps or base))
 
 
-def compute(path: str, pr: Probe, mode: str, fps: float | None = None) -> Signal:
-    fps = fps or analysis_fps(pr, mode)
+def compute(path: str, pr: Probe, mode: str, fps: float | None = None,
+            start: float | None = None, end: float | None = None) -> Signal:
+    """start/end (original-video seconds) limit the analysis to a window."""
+    span = (end if end is not None else pr.end) - (start if start is not None else pr.offset)
+    fps = fps or analysis_fps(pr, mode, span)
     width = 240 if pr.height > pr.width else 320
     mt, mb = default_masks(pr, mode)
     sig = Signal(fps=fps, width=width, height=0, mask_top=mt, mask_bottom=mb)
     ts, content, changed, dxs, dys, resps, lumas, sharps = [], [], [], [], [], [], [], []
     prev_hsv = prev_g = None
     win = None
-    for t, rgb in stream_frames(path, fps, width):
+    for t, rgb in stream_frames(path, fps, width, start=start, end=end):
         h = rgb.shape[0]
         sig.height = h
         y0, y1 = int(h * mt), h - int(h * mb)
