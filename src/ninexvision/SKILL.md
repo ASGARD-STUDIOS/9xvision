@@ -1,6 +1,6 @@
 ---
 name: 9xvision
-description: Use whenever a task involves a video - a local file, a URL (YouTube, Vimeo, TikTok, X, Instagram), a screen recording of an app or website, a game or VR/XR capture, a talk, a music video, or footage to edit. Turns the video into structured, timestamped evidence (scenes or UI states, contact sheets, OCR text, transcript, flow, beats, visual search, capture QA) so you can answer precisely and cite times instead of guessing from a few frames.
+description: Use whenever a task involves a video (a local file, a URL from YouTube, Vimeo, TikTok, X or Instagram, a screen recording, a game or VR/XR capture, a talk, a music video, footage to edit), live input (the camera, microphone, screen or a stream, e.g. "what am I doing", "react to my face", "drive visuals from the room"), or images (a big screenshot or photo with small detail, a folder of photos or screenshots to search or sort). Turns them into structured, timestamped evidence (scenes or UI states, contact sheets, OCR text, transcript, flow, beats, visual search, capture QA, live affect and events, full-resolution image regions) so you can answer precisely instead of guessing.
 ---
 
 # 9xvision: watch video properly
@@ -67,6 +67,22 @@ Use the beats as the slide and section index. Pair each beat's on-screen text wi
 **Playtest → bug list**
 Run `qa`, then `watch` the same capture. For each hitch and flash window, `zoom` on its time to see what was on screen (a spawn, a level load, an effect), and report it with the time and duration.
 
+## Live input (camera, microphone, screen, streams)
+
+Only start the camera or microphone when the user asked for it. Then:
+
+1. `9xvision live start camera` (or MCP `live_start`; `screen`, `screen:1`, `camera:1`, a stream URL, or a file played in real time). Add `--hands`/`--pose` for gestures and body, `--watch-for "someone waving"` for visual triggers, `--osc host:port` to drive TouchDesigner/Max/Ableton. It prints a monitor URL the user can open.
+2. `9xvision live now` (MCP `live_now`) returns a summary, the latest frame and recent events. Look at the frame before describing the scene.
+3. `9xvision live snapshot 30` (MCP `live_snapshot`) turns the last 30 s into a normal watch, with a "Live signals" section. Use zoom/frame/search on it for anything detailed.
+4. `9xvision live stop` (MCP `live_stop`) when done.
+
+Reading the signals: `energy` is absolute; `arousal` is relative to this session (0.5 = typical; the first 10 s are warm-up); `expression_valence` is the face's expression against that person's resting face, not their feelings. Say "smiling", "looked away", "nodded", not "happy", "bored", "agreed". There is no face recognition: never claim who someone is from these tools.
+
+## Images
+
+- One image with small detail (a 4K screenshot, a document photo): `9xvision image <file|url>` (MCP `image`) gives an overview with a lettered grid when the image is bigger than you can see at full resolution, plus OCR text with grid cells. Then ask for a cell (`--region B2`), a range (`B2:C3`) or a box (`x,y,w,h`, px or 0-1) at native resolution. Quote fine print from the region, not the overview.
+- A folder: `9xvision images <folder>` (MCP `images`) builds an album: INDEX.md with dates, cameras, OCR text, palettes and near-duplicates, plus contact sheets. `search "query" --watch <album>` finds images by content or text; `look <album> image:N` gives an original.
+
 ## Install (if `9xvision` is not on PATH)
 
-`uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision` then `9xvision setup`. Requires `ffmpeg`. Optional (setup offers them): `whisper-cpp` with a ggml model for local transcripts, the SigLIP model for visual search, and `tesseract` for OCR where Apple Vision is missing.
+`uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision` then `9xvision setup`. Requires `ffmpeg`. Optional (setup offers them): `whisper-cpp` with a ggml model for local transcripts, the SigLIP model for visual search and visual triggers, `tesseract` for OCR where Apple Vision is missing, and the MediaPipe runtime for live faces, hands and body (on Linux also `sudo apt install libegl1 libgles2 libgl1`).

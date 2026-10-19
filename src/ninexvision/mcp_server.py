@@ -17,9 +17,11 @@ from . import tools
 from .watch import watch as run_watch
 
 mcp = _Server("9xvision", instructions=(
-    "Video perception tools. Call watch(source) first: it returns INDEX.md (structure, flow, text, timings) "
+    "Perception tools. Videos: call watch(source) first: it returns INDEX.md (structure, flow, text, timings) "
     "and the first overview sheet. Look at sheets before zooming. Use zoom/frame/diff only where you need "
-    "more detail, and cite mm:ss.s timestamps in answers."))
+    "more detail, and cite mm:ss.s timestamps in answers. Images: image(source) for one picture (use a region "
+    "for fine detail), images(sources) for a folder. Live camera/mic/screen: live_start, then live_now, "
+    "live_snapshot (turns the last seconds into a watch), live_stop."))
 
 
 def _img(path: str) -> Image:
@@ -94,8 +96,9 @@ def diff(watch_id: str, a: str, b: str) -> list:
 def search(query: str, watch_id: str | None = None, visual: bool = True) -> list:
     """Find moments by on-screen text (OCR), spoken words, AND what is in the picture ("a red car at night",
     "a pie chart", "someone hugging"). Text hits cover every watch; visual moments cover watch_id (default:
-    the most recent watch) and come with a contact sheet of the best frames. Visual scores: strong >= 0.10;
-    all-weak means it is probably not in the video. The first visual search on a watch indexes it (seconds)."""
+    the most recent watch) and come with a contact sheet of the best frames; for an album, the best images.
+    Visual scores: strong >= 0.5, possible >= 0.05; all-weak means it is probably not there. No negation
+    ("an empty room"): search for what is there. The first visual search on a watch indexes it (seconds)."""
     r = tools.search(query, watch_id, visual=visual)
     out: list = [json.dumps(r, indent=1, ensure_ascii=False)]
     sheet = (r.get("visual") or {}).get("sheet")
@@ -117,6 +120,102 @@ def qa(source: str, start: str | None = None, end: str | None = None, fov_deg: f
     if r.get("chart"):
         out.append(_img(r["chart"]))
     return out
+
+
+@mcp.tool()
+@_explained
+def image(source: str, region: str | None = None) -> list:
+    """One image (file or URL). Without region: an overview with a lettered grid (when the image is larger than
+    you can see at full resolution), plus EXIF, palette and OCR text with grid cells. With region ("B2", "B2:C3",
+    or "x,y,w,h" in px or 0-1 fractions): that part at native resolution, enlarged when small. Use it to read small
+    text in big screenshots and photos instead of guessing."""
+    from .images import inspect
+    r = inspect(source, region)
+    return [json.dumps({k: v for k, v in r.items() if k != "path"}, ensure_ascii=False), _img(r["path"])]
+
+
+@mcp.tool()
+@_explained
+def images(sources: list[str], recursive: bool = False) -> list:
+    """Index images (folders, files, globs, URLs) into an album: thumbnails, dates, cameras, OCR text, palettes,
+    near-duplicate groups and a visual index. Returns INDEX.md and the first contact sheet. Then search(query,
+    album_id) finds images by content or text, look(album_id, "image:N") gives an original, image(path, region)
+    reads detail."""
+    from .images import album
+    d = album(sources, recursive=recursive)
+    m = json.loads((d / "watch.json").read_text())
+    out: list = [(d / "INDEX.md").read_text()]
+    if m.get("sheets"):
+        out.append(_img(str(d / m["sheets"][0]["path"])))
+    return out
+
+
+@mcp.tool()
+@_explained
+def live_start(source: str = "camera", watch_for: list[str] | None = None, hands: bool = False, pose: bool = False,
+               mic: str = "auto", osc: str | None = None) -> str:
+    """Start live perception in the background: source = "camera" (or "camera:N"/name), "screen" ("screen:N"), a
+    stream URL (rtsp/srt/YouTube live) or a file played in real time. It tracks motion, cuts, colour, sound (level,
+    beat, voice pitch, speech), faces (52 blendshapes, head pose: expression, not feelings; no identities), optional
+    hands (gesture, pinch) and body, affect (energy, arousal vs this session, expression valence, engagement) and
+    visual triggers (watch_for: ["someone waving"]). It also streams to a monitor page and to OSC if given.
+    Only start the camera or microphone when the user asked for it. Then use live_now, live_snapshot, live_stop."""
+    from . import live
+    args = [source, "--mic", mic]
+    if watch_for:
+        args += ["--watch-for", *watch_for]
+    if hands:
+        args.append("--hands")
+    if pose:
+        args.append("--pose")
+    if osc:
+        args += ["--osc", osc]
+    s = live.start_background(args)
+    return json.dumps({"started": True, "capture": s["capture"],
+                       "monitor": f"http://127.0.0.1:{s['port']}/?k={s['token']}", "dir": s["dir"]})
+
+
+@mcp.tool()
+@_explained
+def live_now() -> list:
+    """What the running live session sees and hears right now: a summary, the latest frame, and recent events."""
+    from . import live
+    from .cli import now_text
+    r = live.request({"cmd": "status"})
+    f = live.request({"cmd": "frame"})
+    return [now_text(r, f), _img(f["path"])]
+
+
+@mcp.tool()
+@_explained
+def live_snapshot(seconds: float = 30) -> list:
+    """Turn the last `seconds` of the live session (up to the buffer, 120 s by default) into a normal watch: shots,
+    text, speech, sound, plus a 'Live signals' section (affect, smiles, nods, gestures, triggers). All watch tools
+    (zoom, frame, diff, search) then work on it."""
+    from . import live
+    r = live.request({"cmd": "snapshot", "seconds": seconds}, timeout=900)
+    out: list = [r.get("index") or json.dumps(r)]
+    if r.get("watch"):
+        m = json.loads((Path(r["watch"]) / "watch.json").read_text())
+        if m.get("sheets"):
+            out.append(_img(str(Path(r["watch"]) / m["sheets"][0]["path"])))
+    return out
+
+
+@mcp.tool()
+@_explained
+def live_watch_for(add: list[str] | None = None, remove: list[str] | None = None) -> str:
+    """Change the running session's visual triggers (descriptions of things to watch for)."""
+    from . import live
+    return json.dumps(live.request({"cmd": "watch_for", "add": add or [], "remove": remove or []}))
+
+
+@mcp.tool()
+@_explained
+def live_stop() -> str:
+    """Stop the live session (camera, microphone and streams close)."""
+    from . import live
+    return json.dumps(live.request({"cmd": "stop"}))
 
 
 @mcp.tool()

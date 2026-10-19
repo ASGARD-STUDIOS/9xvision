@@ -1,7 +1,7 @@
 {
   "name": "9xvision",
-  "version": "0.3.1",
-  "description": "Video perception for agents: scene/UI-state segmentation, timestamped contact sheets, zoom, frame, diff, OCR and transcripts. Local, no API keys.",
+  "version": "0.4.0",
+  "description": "Perception for agents: video (scenes, UI flows, OCR, transcripts, sound, visual search, capture QA), live camera/mic/screen (faces, gestures, affect, beats, OSC/WebSocket) and images (native-resolution regions, albums). Local, no API keys.",
   "author": {
     "name": "Koto Murai"
   },
@@ -11,7 +11,12 @@
     "vision",
     "screen-recording",
     "ocr",
-    "mcp"
+    "mcp",
+    "live",
+    "camera",
+    "osc",
+    "affective-computing",
+    "images"
   ],
   "mcpServers": {
     "9xvision": {

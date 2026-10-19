@@ -1,3 +1,3 @@
 """9xvision: video perception toolkit for AI agents."""
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

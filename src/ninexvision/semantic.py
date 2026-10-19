@@ -177,13 +177,17 @@ def search(wdir: Path, m: dict, query: str, k: int = 8, log=lambda s: None) -> d
         size = render.contact_sheet(frames, [f"{media.fmt_t(mo['t'])} {mo['match']} {mo['score']:.2f}" for mo in moments], p,
                                     title=f"visual search: {query}"[:90])
         sheet = {"path": str(p), "tokens": render.token_estimate(*size)}
+    return {"query": query, "sampled_every_s": step, "moments": moments, "sheet": sheet, "note": query_note(query)}
+
+
+def query_note(query: str) -> str:
     note = ("score = SigLIP match strength (0-1): strong >= 0.5, possible >= 0.05, weak below. All-weak usually "
-            "means it is not in the video. Reliable for objects, people, clothing, places and colours; looser for "
+            "means it is not there. Reliable for objects, people, clothing, places and colours; looser for "
             "actions. Check the sheet before you report a hit.")
     if re.search(r"\b(no|not|without|nobody|nothing|empty|none|isn't|aren't)\b", query.lower()):
         note = ("this query uses negation ('no', 'without', 'empty'...), which image-text models cannot do: they match "
                 "the things named. Search for what IS there instead. " + note)
-    return {"query": query, "sampled_every_s": step, "moments": moments, "sheet": sheet, "note": note}
+    return note
 
 
 def store_meta(wdir: Path) -> None:

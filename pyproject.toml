@@ -1,7 +1,7 @@
 [project]
 name = "ninexvision"
-version = "0.3.1"
-description = "Video perception toolkit for AI agents: scene/state segmentation, timestamped contact sheets, zoom, diff, OCR and transcripts. Local, no API keys."
+version = "0.4.0"
+description = "Perception for AI agents: video, live camera/mic/screen and images. Scenes, UI flows, OCR, transcripts, sound, visual search, capture QA, faces, gestures, affect signals, OSC/WebSocket. Local, no API keys."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Koto Murai" }]
@@ -15,6 +15,7 @@ dependencies = [
     "ocrmac>=1.0; sys_platform == 'darwin'",
     "onnxruntime>=1.24.3",
     "tokenizers>=0.23.3",
+    "websockets>=13",
 ]
 
 [project.scripts]

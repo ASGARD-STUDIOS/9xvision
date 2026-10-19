@@ -99,7 +99,11 @@ def search(query: str, watch: str | None = None, limit: int = 30, visual: bool =
         except (FileNotFoundError, IndexError):
             return out
         try:
-            out["visual"] = {"watch": m["id"], **semantic.search(d, m, query, log=log)}
+            if m.get("kind") == "album":
+                from .images import album_search
+                out["visual"] = {"watch": m["id"], "album": True, **album_search(d, m, query)}
+            else:
+                out["visual"] = {"watch": m["id"], **semantic.search(d, m, query, log=log)}
         except ImportError as e:
             out["visual"] = {"error": f"visual search needs onnxruntime + tokenizers ({e})"}
     return out
@@ -109,10 +113,18 @@ def search_text(r: dict) -> str:
     """Readable form of search() for people and shell agents."""
     L = [f"text hits for {r['query']!r}: {len(r['text_hits'])}"]
     for h in r["text_hits"][:15]:
-        L.append(f"  {media.fmt_t(h['t'])}  {h['kind']:<11} {h['text'][:90]}  [{h['watch']}]")
+        where = f"#{h['image']}" if h["kind"] == "image-text" else media.fmt_t(h["t"])
+        L.append(f"  {where:>8}  {h['kind']:<11} {h['text'][:90]}  [{h['watch']}]")
     v = r.get("visual")
     if v and v.get("error"):
         L.append(f"visual: {v['error']}")
+    elif v and v.get("album"):
+        L.append(f"visual matches in album {v['watch']}: " + " · ".join(f"#{x['id']} {Path(x['file']).name} {x['match']} {x['score']:.2g}"
+                                                                     for x in v["results"][:10]))
+        if v.get("sheet"):
+            L.append(f"  best images: {v['sheet']['path']}")
+        if v["results"] and all(x["match"] == "weak" for x in v["results"]):
+            L.append("  all weak: probably not in these images")
     elif v:
         L.append(f"visual moments in {v['watch']}: " + " · ".join(f"{mo['at']} {mo['match']} {mo['score']:.2g}" for mo in v["moments"]))
         if v.get("sheet"):
@@ -131,6 +143,11 @@ def text_search(query: str, watch: str | None = None, limit: int = 30) -> list[d
     hits = []
     for d in dirs:
         m = json.loads((d / "watch.json").read_text())
+        for it in m.get("images", []):
+            for line in it.get("text", []):
+                if q in line.lower():
+                    hits.append({"watch": m["id"], "kind": "image-text", "image": it["id"], "t": 0.0, "text": line,
+                                 "file": it["file"]})
         for v in m.get("views", []):
             for ln in v.get("text", []):
                 if q in ln["text"].lower():
@@ -155,8 +172,12 @@ def list_watches() -> list[dict]:
     out = []
     for p in sorted(watches_root().glob("*/watch.json"), key=lambda x: x.stat().st_mtime, reverse=True):
         m = json.loads(p.read_text())
-        out.append({"id": m["id"], "title": m["title"], "mode": m["mode"], "duration": m["probe"]["duration"],
-                    "dir": str(p.parent)})
+        row = {"id": m["id"], "title": m["title"], "mode": m["mode"], "dir": str(p.parent)}
+        if m.get("kind") == "album":
+            row["images"] = len(m.get("images", []))
+        else:
+            row["duration"] = m["probe"]["duration"]
+        out.append(row)
     return out
 
 
@@ -169,13 +190,14 @@ def look(watch: str, what: str) -> dict:
              "timeline": [s["path"] for s in m.get("timeline_sheets", [])],
              "view": {v["id"]: v["image"] for v in m.get("views", [])},
              "shot": {s["id"]: s["keyframe"] for s in m.get("shots", [])},
-             "page": {p["id"]: p["stitched"] for p in m.get("pages", []) if p.get("stitched")}}
+             "page": {p["id"]: p["stitched"] for p in m.get("pages", []) if p.get("stitched")},
+             "image": {it["id"]: it["file"] for it in m.get("images", [])}}
     if kind in ("colour", "color", "colour_script"):
         if not m.get("colour_script"):
             raise ValueError("this watch has no colour script (screen mode); try sheet:1 or view:N")
         return {"path": str(Path(d) / m["colour_script"])}
     if kind not in table:
-        raise ValueError("what must be sheet:N, timeline:N, view:N, shot:N, page:N or colour")
+        raise ValueError("what must be sheet:N, timeline:N, view:N, shot:N, page:N, image:N (albums) or colour")
     items = table[kind]
     if not items:
         raise ValueError(f"this {m['mode']}-mode watch has no {kind}s"

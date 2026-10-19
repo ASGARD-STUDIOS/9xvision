@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9xvision live</title>
+<style>
+:root{--bg:#f6f6f4;--panel:#fff;--ink:#1b1c1e;--mute:#6b6e73;--line:#e3e3df;--accent:#0f7b6c;--warm:#c4572b;--bar:#d9dcd8;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#121314;--panel:#1b1c1e;--ink:#ececea;--mute:#9a9da1;--line:#2b2d30;--accent:#3cc4a8;--warm:#ef8a5e;--bar:#2e3134;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 ui-sans-serif,system-ui,-apple-system,sans-serif}
+header{display:flex;gap:12px;align-items:baseline;padding:12px 16px;border-bottom:1px solid var(--line)}
+header b{font-size:15px}header span{color:var(--mute)}#dot{width:8px;height:8px;border-radius:50%;background:var(--mute);display:inline-block;margin-right:6px}
+main{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:12px;padding:12px 16px}
+@media (max-width:820px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px}
+h2{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:0 0 8px;font-weight:600}
+#frame{width:100%;border-radius:6px;background:#000;display:block;aspect-ratio:16/9;object-fit:contain}
+.row{display:grid;grid-template-columns:120px 1fr 52px;gap:8px;align-items:center;margin:3px 0}
+.row .k{color:var(--mute)}.row .v{text-align:right;font-variant-numeric:tabular-nums}
+.bar{height:8px;background:var(--bar);border-radius:4px;overflow:hidden;position:relative}
+.bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .08s linear}
+.bar.c i{position:absolute;left:50%}
+.warm i{background:var(--warm)}
+#beat{width:14px;height:14px;border-radius:50%;background:var(--bar);display:inline-block;vertical-align:middle;transition:background .05s}
+#beat.on{background:var(--warm)}
+#events{height:220px;overflow:auto;font:12px/1.5 ui-monospace,Menlo,monospace;margin:0;color:var(--ink)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+input{width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit}
+.chips span{display:inline-block;margin:4px 6px 0 0;padding:2px 8px;border:1px solid var(--line);border-radius:12px;cursor:pointer}
+.mute{color:var(--mute)}
+</style>
+</head>
+<body>
+<header><b><span id="dot"></span>9xvision live</b><span id="src"></span><span id="stats"></span></header>
+<main>
+  <div>
+    <section><img id="frame" alt="latest frame"></section>
+    <section style="margin-top:12px"><h2>Events</h2><pre id="events"></pre></section>
+  </div>
+  <div>
+    <section><h2>Affect</h2><div id="affect"></div><p class="mute" style="margin:6px 0 0">Arousal is relative to this session (0.5 = typical). Expression valence reads the face, not the feeling.</p></section>
+    <section style="margin-top:12px"><h2>Sound <span id="beat"></span> <span id="bpm" class="mute"></span></h2><div id="audio"></div></section>
+    <section style="margin-top:12px"><h2>Picture</h2><div id="video"></div></section>
+    <section style="margin-top:12px"><h2>Face</h2><div id="face"><span class="mute">no face</span></div></section>
+    <section style="margin-top:12px"><h2>Watch for</h2><input id="q" placeholder="describe something to watch for, press Enter"><div class="chips" id="chips"></div><div id="watch"></div></section>
+  </div>
+</main>
+<script>
+const k = new URLSearchParams(location.search).get("k") || "";
+const $ = id => document.getElementById(id);
+function rows(el, items){
+  el.innerHTML = items.map(([name, val, lo, hi, fmt, cls]) => {
+    const n = val == null ? null : Number(val);
+    const w = n == null ? 0 : Math.max(0, Math.min(1, (n - lo) / (hi - lo))) * 100;
+    const centred = lo < 0 && hi > 0;
+    const style = centred && n != null ? (n >= 0 ? `left:50%;width:${(n / hi) * 50}%` : `left:${50 + (n / -lo) * 50}%;width:${(-n / -lo) * 50}%`) : `width:${w}%`;
+    return `<div class="row"><span class="k">${name}</span><div class="bar ${centred ? "c" : ""} ${cls || ""}"><i style="${style}"></i></div><span class="v">${n == null ? "–" : (fmt ? fmt(n) : n.toFixed(2))}</span></div>`;
+  }).join("");
+}
+let ws, queries = [];
+function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/?k=${encodeURIComponent(k)}`);
+  ws.onopen = () => { $("dot").style.background = "var(--accent)"; send({cmd: "status", id: "init"}); };
+  ws.onclose = () => { $("dot").style.background = "var(--mute)"; setTimeout(connect, 1000); };
+  ws.onmessage = m => {
+    const d = JSON.parse(m.data);
+    if (d.type === "state") return state(d);
+    if (d.type === "event") return event(d);
+    if (d.type === "reply") {
+      if (d.source) { $("src").textContent = d.source; }
+      if (d.watch_for) { queries = d.watch_for; chips(); }
+      if (d.stats) stats = d.stats;
+      if (d.events) d.events.forEach(event);
+    }
+  };
+}
+let stats = {};
+setInterval(() => send({cmd: "status", id: "poll"}), 2000);
+function state(s){
+  const a = s.affect || {}, au = s.audio || {}, v = s.video || {}, f = s.face;
+  rows($("affect"), [["energy", a.energy, 0, 1], ["arousal", a.arousal, 0, 1, null, "warm"], ["expression valence", a.expression_valence, -1, 1],
+                     ["engagement", a.engagement, 0, 1], ["blinks / min", a.blinks_per_min, 0, 40, n => n.toFixed(0)]]);
+  rows($("audio"), [["level dB", au.db, -70, 0, n => n.toFixed(0)], ["onsets / s", au.onset_rate, 0, 8, n => n.toFixed(1)],
+                    ["pitch Hz", au.pitch_hz, 70, 500, n => n.toFixed(0)], ["brightness Hz", au.centroid_hz, 200, 6000, n => n.toFixed(0)]]);
+  $("bpm").textContent = au.bpm ? `${au.bpm} BPM` : "";
+  rows($("video"), [["motion", v.motion, 0, 0.1, n => n.toFixed(3)], ["brightness", v.brightness, 0, 1], ["saturation", v.saturation, 0, 1],
+                    ["warmth", v.warmth, -0.3, 0.3]]);
+  if (f && f.blend) {
+    const top = Object.entries(f.blend).filter(([n]) => !n.startsWith("eyeLook")).sort((x, y) => y[1] - x[1]).slice(0, 8);
+    rows($("face"), [["yaw / pitch", f.yaw, -45, 45, n => `${n.toFixed(0)}° ${f.pitch != null ? f.pitch.toFixed(0) + "°" : ""}`],
+                     ...top.map(([n, x]) => [n, x, 0, 1])]);
+  } else $("face").innerHTML = '<span class="mute">no face</span>';
+  if (s.watch) rows($("watch"), Object.entries(s.watch).map(([q, x]) => [q, x, 0, 0.5, n => n.toFixed(3)]));
+  $("stats").textContent = stats.fps ? `${stats.fps} fps · ${stats.proc_ms} ms/frame${stats.body_ms ? ` · face ${stats.body_ms} ms` : ""}` : "";
+}
+function event(e){
+  if (e.kind === "onset") return;
+  if (e.kind === "beat") { $("beat").classList.add("on"); setTimeout(() => $("beat").classList.remove("on"), 90); return; }
+  const extra = Object.entries(e).filter(([x]) => !["type", "kind", "t"].includes(x)).map(([x, y]) => `${x}=${y}`).join(" ");
+  const el = $("events");
+  el.textContent = `${e.t.toFixed(2).padStart(8)}  ${e.kind}  ${extra}\n` + el.textContent.slice(0, 6000);
+}
+function chips(){ $("chips").innerHTML = queries.map(q => `<span title="remove">${q} ×</span>`).join("");
+  [...$("chips").children].forEach((c, i) => c.onclick = () => send({cmd: "watch_for", remove: [queries[i]], id: "wf"})); }
+$("q").addEventListener("keydown", e => { if (e.key === "Enter" && e.target.value.trim()) { send({cmd: "watch_for", add: [e.target.value.trim()], id: "wf"}); e.target.value = ""; } });
+const img = $("frame");
+function refresh(){ const n = new Image(); n.onload = () => { img.src = n.src; setTimeout(refresh, 100); }; n.onerror = () => setTimeout(refresh, 1000);
+  n.src = `/frame.jpg?k=${encodeURIComponent(k)}&t=${Date.now()}`; }
+connect(); refresh();
+</script>
+</body>
+</html>

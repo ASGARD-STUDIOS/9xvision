@@ -10,7 +10,7 @@ import urllib.request
 from importlib import resources
 from pathlib import Path
 
-from . import extract, semantic
+from . import body, extract, semantic
 
 WHISPER_MODEL = "ggml-small.en.bin"
 WHISPER_URL = f"https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{WHISPER_MODEL}"
@@ -19,6 +19,14 @@ MODELS = Path.home() / ".9xvision" / "models"
 
 def _ok(flag: bool) -> str:
     return "ok " if flag else "-- "
+
+
+def _gl_ok() -> bool:
+    """MediaPipe on Linux loads EGL and GLES even on the CPU path (headless servers often lack them)."""
+    if not sys.platform.startswith("linux"):
+        return True
+    import ctypes.util
+    return bool(ctypes.util.find_library("EGL") and ctypes.util.find_library("GLESv2"))
 
 
 def checks() -> list[dict]:
@@ -46,6 +54,9 @@ def checks() -> list[dict]:
         {"name": "visual search model", "required": False, "ok": semantic.available(),
          "why": f"SigLIP, {semantic.SIZE_MB} MB: find moments by what is in the picture", "fix": "9xvision setup",
          "auto": "siglip"},
+        {"name": "face/hand/body tracking", "required": False, "ok": body.available() and _gl_ok(),
+         "why": f"MediaPipe in its own environment, about {body.SIZE_MB} MB: faces, gestures and body for `9xvision live`",
+         "fix": "9xvision setup" + ("" if _gl_ok() else " and: sudo apt install libegl1 libgles2 libgl1"), "auto": "body"},
     ]
 
 
@@ -157,6 +168,13 @@ def setup(yes: bool = False, dry: bool = False, remove: bool = False, only: list
                     if r["auto"] == "model":
                         if shutil.which("whisper-cli") or shutil.which("whisper-cpp") or dry:
                             _download_model(dry)
+                    elif r["auto"] == "body":
+                        print(f"  creating the MediaPipe runtime (~{body.SIZE_MB} MB) -> {body.runtime()}")
+                        if not dry:
+                            try:
+                                body.install(lambda m: print("  " + m))
+                            except Exception as e:      # optional: live still runs without faces
+                                print(f"  skipped: {e}")
                     elif r["auto"] == "siglip":
                         print(f"  downloading SigLIP ({semantic.SIZE_MB} MB) -> {semantic.model_dir()}")
                         if not dry:

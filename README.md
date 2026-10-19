@@ -1,6 +1,8 @@
 # 9xvision
 
-Video perception for AI agents. Give any agent (Claude Code, Codex, Cursor, anything that speaks MCP or can run a CLI) a video file or URL, and it gets back structured, timestamped evidence instead of a handful of random frames:
+Perception for AI agents: video, live input and images. Give any agent (Claude Code, Codex, Cursor, anything that speaks MCP or can run a CLI) a video, a camera, a microphone, a screen or a folder of images, and it gets back structured, timestamped evidence instead of a handful of random frames. Underneath is one substrate: everything becomes the same kind of searchable, cached record, so the same tools work on all of it.
+
+**Video files and URLs**
 
 - **Screen recordings** (apps, websites): every UI state in order, distinct views, the transition between each (tap, scroll, sheet, swipe), OCR of every screen, stitched full pages, and the flow.
 - **Everything else** (films, music videos, talks, demos): shots split at cuts placed on the exact frame *and* content beats (slide changes inside one take), camera motion, palettes, colour script, on-screen text and speech per segment, plus the music: tempo, beat grid, and whether the edit is cut to the beat.
@@ -8,6 +10,14 @@ Video perception for AI agents. Give any agent (Claude Code, Codex, Cursor, anyt
 - **Capture QA for games, XR and apps**: frame pacing and hitches with timestamps, stereo detection, fast camera turns (comfort), and flashes per second (photosensitivity triage).
 - **Drill-down tools**: `zoom` (dense frames of an interval), `frame` (full-res crop), `diff` (what changed between two moments), `search`, `qa`.
 - **Long videos and URLs**: watch only `--start 1:02:00 --end 1:05:00` of a three-hour stream; for a URL only that part is downloaded. All times stay in full-video time.
+
+**Live input** (camera, microphone, screen, a stream, or a file played in real time)
+- Motion, cuts, colour and light; sound level, onsets, tempo with a beat phase, voice pitch and speech; faces (the 52 ARKit-style blendshapes and head pose), hands (gesture, position, pinch) and body; affect signals; and visual triggers by description ("someone waving").
+- Streamed as **OSC** (TouchDesigner, Max, Ableton, Resolume), **WebSocket** (browsers, games) and **JSON lines**, with a monitor page. An agent can ask what is happening now, or turn the last minutes into a normal watch.
+
+**Images**
+- One big image: an overview with a lettered grid, and any cell or box at native resolution, so an agent can read the fine print instead of guessing.
+- A folder: an album with dates, cameras, text, palettes, near-duplicate groups and visual search.
 
 Everything runs locally. There are no API keys and nothing is uploaded.
 
@@ -66,6 +76,56 @@ $ 9xvision qa "https://www.youtube.com/watch?v=9M0_SWkRcMk" --start 1:00:00 --en
 
 A hitch is a frame shown again while the picture is changing on both sides: the build missed a refresh. A still scene does not count, and a hold of 250 ms or more is reported separately as a freeze (a stall or a deliberate pause). A game capped below the capture rate (30 in 60) is reported as a cadence, and only holds beyond it count. On a 30 s Overwatch capture it reports exactly the three single-frame repeats found by hand. Side-by-side and top-bottom stereo captures are detected and analysed on the left eye. Turn speed is image rotation: in a headset mirror capture it includes the player's own head turns, so it matters most for artificial turning, cutscenes and trailers. The flash check approximates WCAG 2.3.1 for triage. It is not a certified photosensitivity test.
 
+**Live**: start a session on a camera (`camera`), the screen, a stream or a file played in real time. Here, a test clip where a hand gives a thumbs up from 3 s to 6 s (real output):
+
+```
+$ 9xvision live start hand-demo.mp4 --hands --watch-for "a thumbs up"
+[9xvision] monitor: http://127.0.0.1:8899/?k=...
+$ 9xvision live now
+live: ./hand-demo.mp4 at 00:07.3 into the session; 15.1 fps, 1.5 ms per frame
+- affect: energy 0.0, arousal 0.495 (0.5 = typical for this session) [warming up]
+- picture: motion 0.0, brightness 0.428, palette #6B6F6C
+- faces: none
+- watching for: a thumbs up 0.000
+- recent events: gesture_start(Thumb_Up) @00:03.2, seen_start(a thumbs up) @00:03.7, gesture_end(Thumb_Up) @00:06.2, seen_end(a thumbs up) @00:06.9
+$ 9xvision live snapshot 30        # the last 30 s become a normal watch, plus a "Live signals" section
+```
+
+Session time starts at the first frame. A gesture registers after a 0.2 s hold (3.0 → 3.2), and a visual trigger, scored by SigLIP, after two checks half a second apart (3.7). The clip has no sound, so there is no sound line. On a MacBook camera with a face in view, a frame takes about 10 ms.
+
+Every message is a JSON state (about 15 a second) or an event. Over OSC the same numbers arrive as addresses:
+
+| OSC address | what |
+|---|---|
+| `/9xv/affect/energy`, `/arousal`, `/expression_valence`, `/engagement` | affect (below) |
+| `/9xv/audio/db`, `/onset`, `/bpm`, `/beat_phase`, `/pitch_hz`, `/speaking` | sound |
+| `/9xv/video/motion`, `/brightness`, `/saturation`, `/warmth`, `/hue`, `/pan` | picture |
+| `/9xv/face/smile`, `/jaw_open`, `/brow_raise`, `/yaw`, `/pitch`, `/face/blend/<name>` | face, all 52 blendshapes |
+| `/9xv/hands/left/x`, `/y`, `/pinch`, `/gesture` | hands |
+| `/9xv/watch/<query>` | visual trigger scores |
+| `/9xv/event/beat`, `/cut`, `/onset`, `/smile_start`, `/nod`, `/shake`, `/gesture_start`, `/seen_start`, ... | events |
+
+Beat events can fire on the beat rather than after it (the grid is predicted ahead, `--beat-lead` covers output latency), and `beat_phase` runs 0→1 between beats for synced visuals.
+
+**What the affect numbers mean.** `energy` is absolute (loudness, onsets, motion), so the same scene always gives the same value. `arousal` is activation compared with this session so far: 0.5 is typical for the session, because people and rooms differ. `expression_valence` is the face's smile against frown, brow-lowering and sneer, measured against that person's resting face. It reads the expression, not the feeling: people smile when uncomfortable and frown when concentrating. Smiles, blinks per minute, nods, head shakes, looking away and gestures come as events. Nothing identifies anyone: there is no face recognition.
+
+**Privacy.** Live input is processed in memory on your machine. Nothing is written to disk unless you ask (`snapshot`, `frame`, `--jsonl`). The WebSocket listens on 127.0.0.1. Browsers can only connect from the monitor page or an origin you allow with `--allow-origin`, so a web page you happen to visit can't read your camera's signals. Requests with a non-local `Host` are refused (no DNS rebinding), and frames and control need the session's token. Agents are told to start the camera or microphone only when the user asked.
+
+**Images**: a 4200 × 2600 screenshot, where the overview's OCR garbles the fine print:
+
+```
+$ 9xvision image settings.png
+{"source_px": [4200, 2600], "grid": {"cols": 5, "rows": 3, "cell_px": [840, 867]},
+ "text": [{"text": "Quarterly settings", "cell": "A1"}, {"text": "bulla /T3a-19 ' V2.4.1 (Tine prlnt)", "cell": "E3"}], ...}
+$ 9xvision image settings.png --region D3:E3
+{"box": [2520, 1733, 1680, 867], "text": ["build 7f3a-19 • v2.4.1 (fine print)"], ...}
+$ 9xvision images ~/Pictures/trip           # album: INDEX.md with dates, cameras, text, duplicates
+$ 9xvision search "a thumbs up" --watch trip
+visual matches in album trip-album-3a57952a: #5 thumb_up.jpg strong 0.83 · #2 fist.jpg weak 0.0015 · ...
+```
+
+HEIC, AVIF, TIFF, WebP, PNG, JPEG and GIF are read, with EXIF orientation applied.
+
 ## Install
 
 ```bash
@@ -73,9 +133,9 @@ uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision
 9xvision setup
 ```
 
-`setup` plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. It also offers the optional pieces: on macOS it installs them with Homebrew (it asks first); on Linux it prints the commands. Those pieces are local speech-to-text (whisper.cpp plus a 466 MB model), tesseract for OCR where Apple Vision is missing, and the visual search model (SigLIP, 210 MB). Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it. Update later with `uv tool upgrade ninexvision`.
+`setup` plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. It also offers the optional pieces: on macOS it installs them with Homebrew (it asks first); on Linux it prints the commands. Those pieces are local speech-to-text (whisper.cpp plus a 466 MB model), tesseract for OCR where Apple Vision is missing, the visual search model (SigLIP, 210 MB), and face/hand/body tracking for live input (MediaPipe in its own environment, about 350 MB). Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it. Update later with `uv tool upgrade ninexvision`.
 
-Requires Python 3.11+ and ffmpeg. Tested on macOS (Apple Silicon), Ubuntu x86-64 and Linux ARM64, Python 3.11 to 3.14.
+Requires Python 3.11+ and ffmpeg. Tested on macOS (Apple Silicon), Ubuntu x86-64 and Linux ARM64, Python 3.11 to 3.14. On Linux, face/hand/body tracking also needs `sudo apt install libegl1 libgles2 libgl1`.
 
 No `uv` yet? `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux). Manual routes: Claude Code `/plugin marketplace add ASGARD-STUDIOS/9xvision` then `/plugin install 9xvision@9x`; any MCP client: command `9xvision-mcp`. Any other agent with a shell: put `9xvision` on PATH and give it the text from `9xvision skill`.
 
@@ -91,7 +151,16 @@ No `uv` yet? `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux). Ma
 9xvision diff <watch> 00:17.0 00:18.3
 9xvision qa capture.mp4 --fov 110                     # game / XR / app capture QA
 9xvision look <watch> view:12
+9xvision live devices                                 # cameras, microphones, screens
+9xvision live start camera --osc 127.0.0.1:9000       # stream to TouchDesigner / Max / Ableton
+9xvision live start screen --no-face                  # watch the screen
+9xvision live start "https://youtube.com/watch?v=<live id>"   # a live stream (or rtsp://, srt://)
+9xvision live now | snapshot 30 | watch-for "a dog" | stop
+9xvision image photo.heic --region B2                 # one part at native resolution
+9xvision images ./screenshots                         # an album; then search / look image:N
 ```
+
+On macOS, the first camera, microphone or screen use asks for permission for the terminal (or agent app) running 9xvision. A web game or app can subscribe with `new WebSocket("ws://127.0.0.1:8899/")` once its dev origin is allowed: `--allow-origin http://localhost:5173`.
 
 The agent reads `INDEX.md`, looks at the overview contact sheets, and drills down only where a question needs it. Every image an agent is shown is capped at 1568 px on the long edge, so the model never silently downscales it, and its token cost is printed; `frame --crop` gives full resolution.
 
@@ -132,6 +201,8 @@ One ffmpeg decode pass at 12 fps (6 fps over an hour) computes per-frame signals
 - **Visual search**: SigLIP base (Google, Apache-2.0) on onnxruntime, CPU. Frames every 0.5–3 s plus every shot keyframe and screen, embedded once per watch.
 - **Capture QA**: every frame at its native rate, small and grey; repeated frames, phase-correlation catch-up, packet timestamps, luminance swings.
 - **Text**: Apple Vision OCR on macOS (in a watchdog process), tesseract elsewhere.
+- **Live**: one ffmpeg process delivers frames and audio together, and both are stamped on the same content clock, so sound events land within ±17 ms of the true time (a click track), and picture events land at the next analysis frame (66 ms at 15 fps). Audio runs per 23 ms hop: spectral flux, YIN pitch, tempo by autocorrelation every 0.5 s, and a beat grid predicted forward (predicted beats land 11 ms after the clicks, range 6–18). Faces, hands and body run through MediaPipe in a separate process that always takes the newest frame, so tracking never falls behind (about 4–5 ms per frame for faces on an M4 Max; 32 ms with hands and body too). A face too small for MediaPipe's short-range detector is found by scanning tiles, then followed with a crop around it. Processing a 640 px frame takes about 10 ms, at 15 fps. Visual triggers run SigLIP on the newest frame twice a second and need two scores in a row, so they react in about 0.7 s.
+- **Images**: Pillow, with macOS `sips` or ffmpeg for HEIC/AVIF; the grid keeps each cell under about 1,000 native pixels; small regions are enlarged up to 4× for legibility; duplicates by 64-bit difference hash.
 - **Speech**: captions first (yt-dlp or a sidecar `.vtt`), then whisper.cpp locally.
 
 ## Limits
@@ -142,6 +213,10 @@ One ffmpeg decode pass at 12 fps (6 fps over an hour) computes per-frame signals
 - OCR quality follows the source resolution; on 720p screen shares, small UI text needs `frame --crop`. Stylised titles are often missed.
 - Visual search is as good as SigLIP base: strong on objects, scenes and colours; looser on actions; no negation, counting, fine text or small details.
 - Capture QA works from the video alone, so it sees what the viewer saw: a hitch hidden by the capture tool, or added by its encoder, is invisible or indistinguishable. Engine frame-time logs are the ground truth when you have them.
+- Live affect is expression and activity, not emotion: it can't tell what someone feels, and it should not be used to judge people (hiring, school, policing; the EU AI Act bans emotion recognition at work and in education). It is built for art, music, games and your own sessions.
+- Live picture analysis runs at 15 fps by default, so a one-frame event in 30 or 60 fps footage can fall between samples (`--fps 30` if it matters). Faces need to be roughly 50 px wide in the analysis frame; for a room or stage camera use `--width 1280`.
+- Hands are labelled as the person's own left/right for a normal (unmirrored) camera; pass `--mirrored` for a selfie view. Head pitch direction follows MediaPipe's convention and has not been checked against a measured head.
+- Live input is tested on macOS (camera, microphone, screen, files, streams) and with files on Linux. Linux cameras (v4l2) and Windows are untested.
 
 ## License
 
