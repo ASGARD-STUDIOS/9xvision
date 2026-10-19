@@ -51,4 +51,4 @@ Use the beats as the slide and section index. Pair each beat's on-screen text wi
 
 ## Install (if `9xvision` is not on PATH)
 
-`uv tool install git+https://github.com/koto9x/9xvision` (or `uv tool install <local checkout>`). Requires `ffmpeg`. Optional: `whisper-cpp` with a ggml model for local transcripts. OCR uses Apple Vision on macOS and `tesseract` elsewhere.
+`uv tool install git+https://github.com/ASGARD-STUDIOS/9xvision` (or `uv tool install <local checkout>`). Requires `ffmpeg`. Optional: `whisper-cpp` with a ggml model for local transcripts. OCR uses Apple Vision on macOS and `tesseract` elsewhere.
