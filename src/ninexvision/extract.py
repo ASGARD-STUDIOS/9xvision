@@ -205,7 +205,7 @@ def whisper_transcribe(media: Path, workdir: Path, duration: float = 0.0) -> tup
             segs = []
             for s in data.get("transcription", []):
                 txt = s.get("text", "").strip()
-                if txt and txt not in ("[Music]", "[MUSIC]", "(music)"):
+                if txt and txt not in ("[Music]", "[MUSIC]", "(music)") and txt.strip("♪♫ ."):
                     segs.append({"start": round(s["offsets"]["from"] / 1000, 2), "end": round(s["offsets"]["to"] / 1000, 2), "text": txt})
             js.unlink(missing_ok=True)
             return segs, f"whisper.cpp:{model.stem.replace('ggml-', '')}"

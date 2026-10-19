@@ -1,8 +1,26 @@
 {
   "name": "9xvision",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Video perception for agents: scene/UI-state segmentation, timestamped contact sheets, zoom, frame, diff, OCR and transcripts. Local, no API keys.",
-  "author": { "name": "Koto Murai" },
+  "author": {
+    "name": "Koto Murai"
+  },
   "license": "MIT",
-  "keywords": ["video", "vision", "screen-recording", "ocr", "mcp"]
+  "keywords": [
+    "video",
+    "vision",
+    "screen-recording",
+    "ocr",
+    "mcp"
+  ],
+  "mcpServers": {
+    "9xvision": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "9xvision-mcp"
+      ]
+    }
+  }
 }

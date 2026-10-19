@@ -154,8 +154,41 @@ def change_blobs(a: np.ndarray, b: np.ndarray, max_blobs: int = 4) -> list[list[
     return [[st[0] / W, st[1] / H, st[2] / W, st[3] / H] for st in blobs[:max_blobs]]
 
 
-def labels_at(box: list[float], lines: list[dict], k: int = 2) -> list[str]:
-    """On-screen text in the same row as a changed box (a checkbox's label, a tapped option, a picker value)."""
+def colour_shift(a_rgb: np.ndarray, b_rgb: np.ndarray, box: list[float]) -> int:
+    """+1 if the changed pixels in box gained colour (a control turned on / got selected), -1 if they lost it,
+    0 if unclear. Measured on saturation of the pixels that actually changed."""
+    H, W = a_rgb.shape[:2]
+    x0, y0 = int(box[0] * W), int(box[1] * H)
+    x1, y1 = max(x0 + 1, int((box[0] + box[2]) * W)), max(y0 + 1, int((box[1] + box[3]) * H))
+    a, b = a_rgb[y0:y1, x0:x1], b_rgb[y0:y1, x0:x1]
+    if b.shape != a.shape or a.size == 0:
+        return 0
+    changed = (np.abs(a.astype(np.int16) - b.astype(np.int16)).max(axis=2) > 20)
+    if changed.sum() < 20:
+        return 0
+    sa = cv2.cvtColor(a, cv2.COLOR_RGB2HSV)[..., 1][changed].astype(float)
+    sb = cv2.cvtColor(b, cv2.COLOR_RGB2HSV)[..., 1][changed].astype(float)
+    d = sb.mean() - sa.mean()
+    return 1 if d > 25 else -1 if d < -25 else 0
+
+
+def box_changed(a: np.ndarray, b: np.ndarray, x: float, y: float, w: float, h: float) -> bool:
+    """Did pixels change on or right around this text box? Band coordinates (0-1)."""
+    H, W = a.shape[:2]
+    r0, r1 = max(0, int((y - 0.5 * h) * H)), min(H, int((y + 1.5 * h) * H) + 1)
+    c0, c1 = max(0, int(x * W) - 4), min(W, int((x + w) * W) + 5)
+    if r1 <= r0 or c1 <= c0:
+        return False
+    d = cv2.absdiff(a[r0:r1, c0:c1], b[r0:r1, c0:c1])
+    if d.ndim == 3:
+        d = d.max(axis=2)
+    return float((d > 20).mean()) > 0.02
+
+
+def labels_at(box: list[float], lines: list[dict], k: int = 2, changed=None) -> list[str]:
+    """On-screen text in the same row as a changed box (a checkbox's label, a tapped option, a picker value).
+    changed(x, y, w, h) -> bool: prefer labels that changed themselves (a recoloured option); if none did
+    (a switch next to a fixed label), fall back to the nearest label in the row."""
     x, y, w, h = box
     scored = []
     for ln in lines:
@@ -164,10 +197,13 @@ def labels_at(box: list[float], lines: list[dict], k: int = 2) -> list[str]:
         if overlap < 0.3 * min(h, lh) or ln.get("conf", 1) < 0.4 or len(ln["text"].strip()) < 2:
             continue
         gap = max(0.0, max(x, lx) - min(x + w, lx + lw))
-        scored.append((gap, -overlap, ln["text"].strip()))
-    scored.sort()
+        scored.append((gap, -overlap, ln["text"].strip(), ln["box"]))
+    scored.sort(key=lambda r: r[:3])
+    if changed is not None:
+        own = [r for r in scored if changed(*r[3])]
+        scored = own if own else scored[:1]
     out = []
-    for _, _, t in scored:
+    for _, _, t, _ in scored:
         if t not in out:
             out.append(t)
     return out[:k]

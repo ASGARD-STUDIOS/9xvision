@@ -29,6 +29,7 @@ You cannot take video input directly. 9xvision converts a video into things you 
 
 - `~` after a view id means it was captured while the screen was moving (carousel, video, animation). Zoom there if it matters.
 - OCR is Apple Vision (or Tesseract). It is very good, but it can misspell stylised text, so check important strings against the frame.
+- In screen mode the flow names what changed: `local change at −'Work' · −'Self-Care'` means those options lost colour (deselected); `+'Female'` gained colour (selected). It is a colour heuristic, so confirm important states with `diff` or `frame`.
 - In screen mode, "views" with the same text but a different look are real UI states (checked vs unchecked, selected vs not). Use `diff` on their times to see exactly what changed.
 - In film mode, "via cut" is an edit and "via beat" is a content change inside a shot. Rhythm stats (ASL, cuts per minute) count cuts only.
 - If audio exists, `transcript.txt` has timestamped speech: captions when available, otherwise local whisper.cpp.

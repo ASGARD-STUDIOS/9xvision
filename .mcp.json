@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "9xvision": {
-      "command": "uvx",
-      "args": ["--from", "${CLAUDE_PLUGIN_ROOT}", "9xvision-mcp"]
-    }
-  }
-}

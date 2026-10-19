@@ -45,6 +45,14 @@ def main(argv: list[str] | None = None) -> int:
 
     sub.add_parser("list", help="List watches")
     sub.add_parser("mcp", help="Run the MCP server on stdio")
+    sub.add_parser("doctor", help="Check dependencies and which agents have 9xvision plugged in")
+    su = sub.add_parser("setup", help="Install missing dependencies (asks first) and plug 9xvision into Claude Code, "
+                                      "Codex, Cursor and Claude Desktop")
+    su.add_argument("--yes", "-y", action="store_true", help="install missing pieces without asking")
+    su.add_argument("--dry-run", action="store_true", help="show what would happen, change nothing")
+    su.add_argument("--remove", action="store_true", help="unregister 9xvision from the agents")
+    su.add_argument("--only", nargs="+", metavar="AGENT", help="claude | codex | cursor | desktop")
+    sub.add_parser("skill", help="Print the agent instructions (SKILL.md) for agents without plugin support")
 
     a = ap.parse_args(argv)
     try:
@@ -65,6 +73,16 @@ def main(argv: list[str] | None = None) -> int:
             _print(tools.look(a.watch, a.what))
         elif a.cmd == "list":
             _print(tools.list_watches())
+        elif a.cmd == "doctor":
+            from .setup import doctor
+            return doctor()
+        elif a.cmd == "setup":
+            from .setup import setup
+            only = [{"desktop": "claude desktop"}.get(x.lower(), x) for x in a.only] if a.only else None
+            return setup(yes=a.yes, dry=a.dry_run, remove=a.remove, only=only)
+        elif a.cmd == "skill":
+            from .setup import _skill_text
+            print(_skill_text())
         elif a.cmd == "mcp":
             from .mcp_server import main as mcp_main
             mcp_main()

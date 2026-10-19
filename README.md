@@ -8,6 +8,37 @@ Video perception for AI agents. Give any agent (Claude Code, Codex, Cursor, anyt
 
 Everything runs locally. There are no API keys and nothing is uploaded.
 
+## What you get
+
+**App and screen recordings:** the flow, step by step, naming what changed (`+` = turned on / selected, `−` = turned off):
+
+```
+00:09.3  V7 -> V8    [content change at +'Get recommendations' · +'Female']
+00:10.4  V8 -> V9    [screen change]
+00:17.7  V13 -> V14  [local change at −'Work' · −'Self-Care']
+00:18.4  V14 -> V15  [local change at −'Hobbies']
+```
+
+Every distinct screen is kept full-res with its text, background and palette, and the list compresses repeats ("same as V9; added: 1986 | 1987 | 1988").
+
+**Everything else:** one labelled cell per shot (or slide / scene change), with camera motion, palette, on-screen text and speech in INDEX.md, plus a colour script of the whole film:
+
+![contact sheet](docs/film_sheet.jpg)
+![colour script](docs/colour_script.jpg)
+
+<sub>Big Buck Bunny © Blender Foundation, CC BY 3.0.</sub>
+
+## Install
+
+```bash
+uv tool install git+https://github.com/koto9x/9xvision
+9xvision setup
+```
+
+`setup` installs whatever is missing (ffmpeg, OCR, local speech-to-text; it asks first) and plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it.
+
+No `uv` yet? `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux). Manual routes: Claude Code `/plugin marketplace add koto9x/9xvision` then `/plugin install 9xvision@9x`; any MCP client: command `9xvision-mcp`. Any other agent with a shell: put `9xvision` on PATH and give it the text from `9xvision skill`.
+
 ## Benchmark
 
 The same agent (Claude Code headless, Claude Sonnet 5.5) answered the same questions about the same videos **with and without** 9xvision. Both arms had the whole machine: ffmpeg, ffprobe, whisper.cpp, tesseract and python. The kit arm also had `9xvision` and the skill text, and started from an empty cache each run, so its processing time counts. Answers were graded blind by Claude Opus 5.5 against answer keys written and verified from raw frames before the runs. 3–4 runs per cell, October 2026.
@@ -26,32 +57,9 @@ What this means, without spin:
 - A frontier agent with ffmpeg is already a strong video reader. The kit's gains come from **fewer misses on fast, visual-only detail** (0.5 s inserts in a music video, a file path on a slide), **fewer tokens and turns**, and **a reusable cache**: every later question about the same video is instant.
 - It produces things the baseline never builds: the UI flow with what changed at each step (`local change at 'Work' · 'Self-Care'`), every screen's copy, palettes, a colour script, and stitched pages.
 - **Cold start is the cost.** A 74-minute video takes about 100 s to process the first time, so on a single question about a long, captioned video, caption search plus a few ffmpeg grabs is faster.
-- **Selection state still needs a look.** OCR text can't tell checked from unchecked; the flow says *where* a change happened, and `diff` or `frame` shows *what*.
+- **Selection state:** the benchmark found the agent sometimes misread checked vs unchecked options. Since then the flow marks each change `+`/`−` (gained or lost colour), which reads the DailyBean recording correctly; it is a heuristic, so `diff` confirms.
 
 The answer keys were corrected three times after inspecting failures; each time the key was wrong, not the run, and both arms were re-graded. Harness and grader: `bench/`.
-
-## Install
-
-```bash
-uv tool install git+https://github.com/koto9x/9xvision     # CLI: 9xvision, MCP server: 9xvision-mcp
-brew install ffmpeg                                          # required
-brew install whisper-cpp tesseract                           # optional: local transcripts, non-macOS OCR
-```
-
-**Claude Code plugin** (skill + MCP server):
-
-```
-/plugin marketplace add koto9x/9xvision
-/plugin install 9xvision@9x
-```
-
-**Any MCP client** (Codex, Cursor, Claude Desktop):
-
-```json
-{ "mcpServers": { "9xvision": { "command": "uvx", "args": ["--from", "git+https://github.com/koto9x/9xvision", "9xvision-mcp"] } } }
-```
-
-**Any agent with a shell:** put `skills/9xvision/SKILL.md` in its instructions and `9xvision` on PATH.
 
 ## Use
 

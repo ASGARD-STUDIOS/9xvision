@@ -61,6 +61,8 @@ def watch(source: str, mode: str = "auto", out: str | None = None, force: bool =
             raise FileNotFoundError(path)
     pr = media.probe(path)
     title = info.get("title") or (given.stem if given and pr.title == path.stem else pr.title)
+    if ";" in title and len(set(title.split(";"))) == 1:   # some muxers repeat the title per stream
+        title = title.split(";")[0]
     wid = f"{_slug(title)}-{media.file_fingerprint(path)}"
     wdir = Path(out).expanduser() if out else watches_root() / wid
     meta_path = wdir / "watch.json"
@@ -159,11 +161,12 @@ def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
     states = screen.find_states(sig)
     import cv2
     y0, y1 = int(pr.height * sig.mask_top), pr.height - int(pr.height * sig.mask_bottom)
-    sharp = []
+    sharp, sharp_rgb = [], []
     for fr in media.grab_frames(path, [float(sig.t[s["rep"]]) for s in states], max_edge=480):
-        g = cv2.cvtColor(fr, cv2.COLOR_RGB2GRAY)
-        h = g.shape[0]
-        sharp.append(g[int(h * y0 / pr.height):int(h * y1 / pr.height)])
+        h = fr.shape[0]
+        band_rgb = fr[int(h * y0 / pr.height):int(h * y1 / pr.height)]
+        sharp_rgb.append(band_rgb)
+        sharp.append(cv2.cvtColor(band_rgb, cv2.COLOR_RGB2GRAY))
     screen.cluster_views(sig, states, sharp)
     transitions = [screen.classify_transition(sig, a, b) for a, b in zip(states, states[1:])]
     page_of = screen.group_pages(states, transitions)
@@ -210,10 +213,14 @@ def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
             band = 1 - sig.mask_top - sig.mask_bottom
             lines = views[states[k]["view"]].get("text", []) + views[states[k + 1]["view"]].get("text", [])
             at: list[str] = []
-            for bx, by, bw, bh in screen.change_blobs(sharp[k], sharp[k + 1]):
-                for lab in screen.labels_at([bx, sig.mask_top + by * band, bw, bh * band], lines):
-                    if lab not in at:
-                        at.append(lab)
+            for blob in screen.change_blobs(sharp[k], sharp[k + 1]):
+                bx, by, bw, bh = blob
+                sign = {1: "+", -1: "−"}.get(screen.colour_shift(sharp_rgb[k], sharp_rgb[k + 1], blob), "")
+                def changed(lx, ly, lw, lh, k=k):   # the label itself changed (recoloured, greyed, swapped)
+                    return screen.box_changed(sharp_rgb[k], sharp_rgb[k + 1], lx, (ly - sig.mask_top) / band, lw, lh / band)
+                for lab in screen.labels_at([bx, sig.mask_top + by * band, bw, bh * band], lines, changed=changed):
+                    if not any(a.lstrip("+−") == lab for a in at):
+                        at.append(sign + lab)
             if at:
                 tr["at"] = at[:6]
     meta["states"] = out_states
@@ -261,7 +268,8 @@ def _flow(states: list[dict], transitions: list[dict]) -> list[str]:
         if tr["type"] in ("scroll", "swipe", "slide"):
             extra = f" {tr['direction']} {tr['distance_screens']}x"
         elif tr.get("region_px"):
-            extra = (" at " + " · ".join(f"'{t}'" for t in tr["at"]) if tr.get("at") else "") + f" region={tr['region_px']}"
+            extra = (" at " + " · ".join(f"{t[0]}'{t[1:]}'" if t[:1] in "+−" else f"'{t}'" for t in tr["at"])
+                     if tr.get("at") else "") + f" region={tr['region_px']}"
         lines.append(f"{media.fmt_t(tr['from_t'])}  V{a['view']} -> V{b['view']}  [{tr['type']}{extra}]")
     return lines
 
@@ -328,6 +336,8 @@ def index_md(m: dict) -> str:
         L.append(f"## Summary: {len(views)} distinct views ({moving} captured while moving, marked ~), {len(states)} states")
         L.append("")
         L.append("## Flow")
+        L.append("`at` names the text whose row changed: `+` = gained colour (usually selected / turned on), "
+                 "`−` = lost colour (usually deselected / turned off). Check with `diff` when it matters.")
         L.append("```")
         if states:
             L.append(f"{media.fmt_t(states[0]['start'])}  start on V{states[0]['view']}")

@@ -90,6 +90,15 @@ def test_screen_states_and_revisit(screen_video, tmp_path, monkeypatch):
     assert m["transitions"][0]["type"] == "local change"   # the toggle
 
 
+@pytest.mark.skipif(not __import__("ninexvision.extract", fromlist=["x"]).ocr_backend(), reason="needs an OCR backend")
+def test_change_labels_name_the_toggle(screen_video, tmp_path, monkeypatch):
+    monkeypatch.setenv("NINEXVISION_HOME", str(tmp_path))
+    wd = watch(str(screen_video), mode="screen", out=str(tmp_path / "w"), transcribe="off", ocr=True)
+    m = json.loads((wd / "watch.json").read_text())
+    at = m["transitions"][0].get("at", [])
+    assert any(a.startswith("+") and "Row 1" in a for a in at), at   # the green toggle on row 1 turned on
+
+
 def test_drilldown_tools(screen_video, tmp_path, monkeypatch):
     monkeypatch.setenv("NINEXVISION_HOME", str(tmp_path))
     wd = watch(str(screen_video), mode="screen", out=str(tmp_path / "w"), transcribe="off", ocr=False)
@@ -108,3 +117,8 @@ def test_time_parsing():
     assert media.parse_t("1:00:00") == 3600
     assert media.parse_t("12s") == 12
     assert media.fmt_t(83.5) == "01:23.5"
+
+
+def test_plugin_skill_matches_packaged_skill():
+    root = Path(__file__).resolve().parents[1]
+    assert (root / "skills/9xvision/SKILL.md").read_text() == (root / "src/ninexvision/SKILL.md").read_text()
