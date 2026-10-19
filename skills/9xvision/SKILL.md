@@ -12,7 +12,8 @@ You cannot take video input directly. 9xvision converts a video into things you 
 1. **Watch once.** `9xvision watch <file-or-url>` (MCP: `watch`). It prints `INDEX.md` and caches everything, so a second call is instant. Mode is picked automatically:
    - **screen**: app or website recordings. You get distinct views (V#), every UI state in order (S#), a transition-by-transition flow, OCR of every view, and stitched full pages where the user scrolled.
    - **film**: everything else. You get shots split at camera cuts *and* at content beats (slide changes, new pages in a screen share, scene changes inside one take), plus camera motion, palettes, a colour script, on-screen text and speech per segment.
-2. **Read INDEX.md completely** before looking at any image. It already holds the structure, the text on screen and the speech, and those are usually where the answer is.
+   Processing takes about 1–2 s per minute of video (a 74-minute keynote: ~100 s), once. Give the command a timeout long enough to finish (e.g. 10 minutes) instead of abandoning it; everything after is instant.
+2. **Read INDEX.md completely** before looking at any image. It already holds the structure, the text on screen and the speech, and those are usually where the answer is. For a long video with a specific question (a name, a number, a slide), `9xvision search "<word>"` first: it searches every OCR'd frame and the transcript, and returns times and keyframes to open.
 3. **Look at the overview sheets.** Each cell is one segment or view, labelled with its id and start time. For videos under ~10 minutes, view every sheet. For longer ones, view the colour script and the first sheet, then target.
 4. **Drill down only where the question needs it:**
    - `9xvision frame <watch> 01:23.4 --crop x,y,w,h`: full-resolution pixels, for small text, numbers, prices, UI copy. Crop takes pixels or 0-1 fractions.

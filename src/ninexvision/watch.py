@@ -135,8 +135,7 @@ def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
     shots = film.shots(sig, pr.duration)
     log(f"{len(shots)} shots")
     key_edge = 1280
-    for s in shots:
-        fr = media.grab_frame(path, s["key_t"], max_edge=key_edge)
+    for s, fr in zip(shots, media.grab_frames(path, [s["key_t"] for s in shots], max_edge=key_edge)):
         kp = wdir / "keyframes" / f"shot_{s['id']:03d}_{s['key_t']:.2f}.jpg"
         render.save_jpg(fr, kp, max_edge=key_edge)
         s["keyframe"] = str(kp.relative_to(wdir))
@@ -151,7 +150,7 @@ def _film(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
     render.colour_script(shots, pr.duration, cs)
     meta["colour_script"] = str(cs.relative_to(wdir))
     meta["sheets"] = _sheets(wdir, path, [(s["key_t"], f"#{s['id']} {media.fmt_t(s['start'])}", s["id"]) for s in shots],
-                             pr, sheet_cells, "shot")
+                             pr, sheet_cells, "shot", images={s["id"]: wdir / s["keyframe"] for s in shots})
 
 
 # ---------------------------------------------------------------- screen
@@ -161,8 +160,8 @@ def _screen(meta, sig, path, pr, wdir, segs, do_ocr, sheet_cells, log):
     import cv2
     y0, y1 = int(pr.height * sig.mask_top), pr.height - int(pr.height * sig.mask_bottom)
     sharp = []
-    for s in states:
-        g = cv2.cvtColor(media.grab_frame(path, float(sig.t[s["rep"]]), max_edge=480), cv2.COLOR_RGB2GRAY)
+    for fr in media.grab_frames(path, [float(sig.t[s["rep"]]) for s in states], max_edge=480):
+        g = cv2.cvtColor(fr, cv2.COLOR_RGB2GRAY)
         h = g.shape[0]
         sharp.append(g[int(h * y0 / pr.height):int(h * y1 / pr.height)])
     screen.cluster_views(sig, states, sharp)
@@ -269,7 +268,7 @@ def _flow(states: list[dict], transitions: list[dict]) -> list[str]:
 
 # ---------------------------------------------------------------- sheets
 
-def _sheets(wdir, path, items, pr, sheet_cells, kind, prefix="overview"):
+def _sheets(wdir, path, items, pr, sheet_cells, kind, prefix="overview", images=None):
     if not items:
         return []
     portrait = pr.height > pr.width
@@ -277,7 +276,15 @@ def _sheets(wdir, path, items, pr, sheet_cells, kind, prefix="overview"):
     out = []
     for n, k in enumerate(range(0, len(items), per)):
         chunk = items[k:k + per]
-        frames = [media.grab_frame(path, t, max_edge=720) for t, _, _ in chunk]
+        if images:   # reuse frames already saved (keyframes) instead of decoding again
+            from PIL import Image
+            frames = []
+            for _, _, i in chunk:
+                im = Image.open(images[i]).convert("RGB")
+                im.thumbnail((720, 720))
+                frames.append(np.asarray(im))
+        else:
+            frames = list(media.grab_frames(path, [t for t, _, _ in chunk], max_edge=720))
         sp = wdir / "sheets" / f"{prefix}_{n + 1:02d}.jpg"
         size = render.contact_sheet(frames, [lab for _, lab, _ in chunk], sp)
         out.append({"path": str(sp.relative_to(wdir)), kind + "s": [i for _, _, i in chunk],

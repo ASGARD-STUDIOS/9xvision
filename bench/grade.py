@@ -22,6 +22,25 @@ def extract_answers(text: str) -> dict:
     return {}
 
 
+def from_transcript(rd: Path) -> str:
+    """The last assistant message that holds an answer block. A background task finishing after the answer
+    can trigger one more turn whose text becomes `result`, hiding the real answers."""
+    proj = Path.home() / ".claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(rd))
+    best = ""
+    for f in sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime):
+        for line in f.read_text().splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if ev.get("type") != "assistant":
+                continue
+            for c in ev.get("message", {}).get("content", []):
+                if c.get("type") == "text" and "```json" in c.get("text", ""):
+                    best = c["text"]
+    return best
+
+
 def grade_run(rd: Path, bench: Path, model: str) -> dict:
     out_path = rd / "grade.json"
     if out_path.exists():
@@ -29,6 +48,10 @@ def grade_run(rd: Path, bench: Path, model: str) -> dict:
     rec = json.loads((rd / "result.json").read_text())
     qs = json.loads((bench / "gt" / rec["video"] / "questions.json").read_text())
     answers = {} if qs.get("kind") == "spec" else extract_answers(rec.get("result") or "")
+    if not answers and qs.get("kind") != "spec":
+        answers = extract_answers(from_transcript(rd))
+        if answers:
+            g_note = "answers recovered from transcript"
     if qs.get("kind") == "spec":
         answers = {"teardown": rec.get("result") or ""}
     elif not answers:
@@ -49,6 +72,8 @@ def grade_run(rd: Path, bench: Path, model: str) -> dict:
     raw = json.loads(res.stdout).get("result", "")
     m = re.search(r"\{.*\}", raw, re.S)
     g = json.loads(m.group(0)) if m else {"scores": {}, "notes": {"_": raw[:300]}}
+    if "g_note" in locals():
+        g["note"] = g_note
     g["total"] = round(sum(float(v) for v in g["scores"].values()), 2)
     g["max"] = len(qs["questions"])
     g.update({k: rec[k] for k in ("video", "arm", "rep", "cost_usd", "turns", "wall_s")})

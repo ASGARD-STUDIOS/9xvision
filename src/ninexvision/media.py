@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 import re
 import shutil
 import subprocess
@@ -43,6 +44,14 @@ class Probe:
 
 
 def probe(path: str | Path) -> Probe:
+    p = Path(path)
+    st = p.stat() if p.exists() else None
+    return _probe((str(path), st.st_mtime_ns if st else 0, st.st_size if st else 0))
+
+
+@lru_cache(maxsize=64)
+def _probe(key: tuple) -> Probe:
+    path = key[0]
     require("ffprobe")
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
@@ -170,6 +179,13 @@ def grab_frame(path: str | Path, t: float, max_edge: int | None = None) -> np.nd
             return grab_frame(path, t - 0.2, max_edge)
         raise MediaError(f"Could not decode frame at {t:.2f}s: {out.stderr.decode()[:300]}")
     return np.frombuffer(out.stdout[:need], np.uint8).reshape((h, w, 3)).copy()
+
+
+def grab_frames(path: str | Path, times: list[float], max_edge: int | None = None, workers: int = 8):
+    """grab_frame for many times in parallel (each is an independent fast seek). Yields frames in order."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(workers) as ex:
+        yield from ex.map(lambda t: grab_frame(path, t, max_edge), times)
 
 
 def audio_level(path: str | Path) -> float | None:
