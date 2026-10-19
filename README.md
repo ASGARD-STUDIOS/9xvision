@@ -35,7 +35,9 @@ uv tool install git+https://github.com/koto9x/9xvision
 9xvision setup
 ```
 
-`setup` installs whatever is missing (ffmpeg, OCR, local speech-to-text; it asks first) and plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it.
+The repo is private for now: accept the GitHub invite first. If `uv` asks for a password, run `gh auth login` once (or `gh auth setup-git`).
+
+`setup` installs whatever is missing (ffmpeg, OCR, local speech-to-text; it asks first) and plugs 9xvision into every agent it finds: **Claude Code, Codex, Cursor and Claude Desktop**, as an MCP server plus the skill. Then restart the agent and ask it about a video. `9xvision doctor` shows what's installed and connected; `9xvision setup --remove` undoes it. Update later with `uv tool upgrade ninexvision`.
 
 No `uv` yet? `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux). Manual routes: Claude Code `/plugin marketplace add koto9x/9xvision` then `/plugin install 9xvision@9x`; any MCP client: command `9xvision-mcp`. Any other agent with a shell: put `9xvision` on PATH and give it the text from `9xvision skill`.
 
