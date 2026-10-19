@@ -1,0 +1,8 @@
+{
+  "name": "9xvision",
+  "version": "0.1.0",
+  "description": "Video perception for agents: scene/UI-state segmentation, timestamped contact sheets, zoom, frame, diff, OCR and transcripts. Local, no API keys.",
+  "author": { "name": "Koto Murai" },
+  "license": "MIT",
+  "keywords": ["video", "vision", "screen-recording", "ocr", "mcp"]
+}

@@ -1,0 +1,27 @@
+[project]
+name = "ninexvision"
+version = "0.1.0"
+description = "Video perception toolkit for AI agents: scene/state segmentation, timestamped contact sheets, zoom, diff, OCR and transcripts. Local, no API keys."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Koto Murai" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.26",
+    "opencv-python-headless>=4.9",
+    "pillow>=10.1",
+    "mcp>=1.2",
+    "yt-dlp>=2025.1.1",
+    "ocrmac>=1.0; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+9xvision = "ninexvision.cli:main"
+9xvision-mcp = "ninexvision.mcp_server:main"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["uv_build>=0.9.26,<0.10.0"]
+build-backend = "uv_build"

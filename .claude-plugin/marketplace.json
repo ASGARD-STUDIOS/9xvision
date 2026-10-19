@@ -1,0 +1,11 @@
+{
+  "name": "9x",
+  "owner": { "name": "Koto Murai" },
+  "plugins": [
+    {
+      "name": "9xvision",
+      "source": "./",
+      "description": "Video perception for agents: watch any video or screen recording as structured, timestamped evidence."
+    }
+  ]
+}
